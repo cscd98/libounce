@@ -2018,3 +2018,9 @@ Result hidIsFirmwareUpdateNeededForNotification(bool *out) {
     return rc;
 }
 
+Result hidSetTouchScreenOutputRanges(s32 width, s32 height) {
+    if (hosversionBefore(17,0,0))
+        return MAKERESULT(Module_Libnx, LibnxError_IncompatSysVer);
+
+    return _hidCmdInU32U32AruidNoOut(width, height, 1004);
+}
