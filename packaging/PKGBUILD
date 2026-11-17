@@ -3,7 +3,9 @@
 # libounce's pacman package, for devkitPro's pacman (dkp-pacman). Dockerfile
 # builds it with dkp-makepkg from this repository's tree:
 #   LIBOUNCE_VERSION=20261117 dkp-makepkg
-# It installs what `make install` installs: $DEVKITPRO/libounce.
+# It installs what `make install` installs: $DEVKITPRO/libounce, with the
+# CMake toolchain in libounce/cmake, $DEVKITPRO/switch2vars.sh and
+# aarch64-none-elf-cmake in $DEVKITPRO/portlibs/switch2/bin.
 
 pkgname=libounce
 pkgver=${LIBOUNCE_VERSION:?set LIBOUNCE_VERSION to the release version}
@@ -13,6 +15,10 @@ arch=('any')
 url='https://github.com/ouncebrew/libounce'
 license=('ISC' 'MIT')
 groups=('ounce-devkit')
+# devkitPro's compiler and tools, and the CMake toolchains and environment
+# script that libounce's CMake toolchain and switch2vars.sh build on.
+depends=('devkitA64' 'devkita64-cmake' 'switch-cmake' 'switch-tools'
+         'dkp-toolchain-vars' 'switch-zlib')
 makedepends=('devkitA64')
 # Static AArch64 archives: the host's strip must not touch them.
 options=(!strip staticlibs)

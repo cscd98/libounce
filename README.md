@@ -18,17 +18,15 @@ into `$DEVKITPRO/libnx`, as upstream does.
 
 ## Packages
 
-Each release has a package for devkitPro's pacman:
+libounce is in the `[ounce]` repository for devkitPro's pacman, with OunceVK
+and libkaihen: see <https://github.com/ouncebrew/pacman>. Each release also
+has the package attached, for `dkp-pacman -U`. It installs the same files as
+`make install` and pulls in the devkitPro packages it builds on.
 
-```sh
-dkp-pacman -U libounce-20261117-1-any.pkg.tar.zst
-```
-
-It installs the same files as `make install`. `packaging/Dockerfile` builds
-it with `dkp-makepkg` in devkitPro's image. Pushing a version tag (the date,
-as `20261118`) builds the package on GitHub and publishes the release, with
-the annotated tag's message as its notes; `packaging/release.sh` does the
-same locally.
+`packaging/Dockerfile` builds the package with `dkp-makepkg` in devkitPro's
+image. Pushing a version tag (the date, as `20261118`) builds it on GitHub
+and publishes the release, with the annotated tag's message as its notes;
+`packaging/release.sh` does the same locally.
 
 ## Use
 
@@ -42,10 +40,20 @@ Then use `-lnx` to link libounce. If you want a small program that uses
 newlib's malloc, link `-lounce_core` instead. `switch2_cpu.mk` gives the CPU
 flags for Makefiles that do not use the rules.
 
+For CMake, Meson or autotools, `make install` also installs
+`$DEVKITPRO/switch2vars.sh`, the CMake toolchain
+(`$DEVKITPRO/libounce/cmake/Switch2.cmake`) and `aarch64-none-elf-cmake`:
+
+```sh
+source $DEVKITPRO/switch2vars.sh
+aarch64-none-elf-cmake -S . -B build && cmake --build build
+```
+
 ## License
 
 libnx and libounce: ISC (`LICENSE` and `LICENSES/`). mimalloc
-(`nx/external/mimalloc`): MIT.
+(`nx/external/mimalloc`): MIT. The CMake toolchain and `switch2vars.sh`
+(`toolchain/`): MIT (`LICENSES/toolchain-MIT.txt`).
 
 libnx is by switchbrew and its contributors:
 [https://github.com/switchbrew/libnx](https://github.com/switchbrew/libnx).

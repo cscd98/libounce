@@ -153,6 +153,11 @@ install-switch2: switch2
 		lib/libounce_malloc.a lib/libounce_mallocd.a $(DESTDIR)$(DEVKITPRO)/libounce/lib/
 	@echo 'INPUT(libounce.a)' > $(DESTDIR)$(DEVKITPRO)/libounce/lib/libnx.a
 	@echo 'INPUT(libounced.a)' > $(DESTDIR)$(DEVKITPRO)/libounce/lib/libnxd.a
+	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/cmake/Platform $(DESTDIR)$(DEVKITPRO)/portlibs/switch2/bin
+	@cp -v ../toolchain/switch2vars.sh $(DESTDIR)$(DEVKITPRO)/
+	@cp -v ../toolchain/cmake/Switch2.cmake $(DESTDIR)$(DEVKITPRO)/libounce/cmake/
+	@cp -v ../toolchain/cmake/Platform/NintendoSwitch.cmake $(DESTDIR)$(DEVKITPRO)/libounce/cmake/Platform/
+	@cp -v ../toolchain/aarch64-none-elf-cmake $(DESTDIR)$(DEVKITPRO)/portlibs/switch2/bin/
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/licenses
 	@cp -v ../LICENSE.md $(DESTDIR)$(DEVKITPRO)/libounce/licenses/libnx-ISC.txt
 	@cp -v ../LICENSES/libounce-ISC.txt $(DESTDIR)$(DEVKITPRO)/libounce/licenses/
