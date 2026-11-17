@@ -11,12 +11,24 @@
 #include "../crypto/sha256.h"
 #include "../services/ncm_types.h"
 
+/// Code verification data that OpenCodeFileSystem returns.
 typedef struct {
+#if defined(__SWITCH2__)
+    // [Switch 2] The signature field is 0x180 bytes, so the structure is
+    // 0x1A4 bytes. The Loader-root OpenCodeFileSystem that kaiHEN sends
+    // receives 0x1A4 bytes: the hash at 0x180 and is_signed at 0x1A0.
+    u8 signature[0x180];
+#else
     u8 signature[0x100];
+#endif
     u8 hash[SHA256_HASH_SIZE];
     bool is_signed;
     u8 reserved[3];
 } FsCodeInfo;
+
+#if defined(__SWITCH2__)
+static_assert(sizeof(FsCodeInfo) == 0x1A4, "Switch 2 code verification data");
+#endif
 
 /// Initialize fsp-ldr.
 Result fsldrInitialize(void);

@@ -11,13 +11,23 @@ NX_GENERATE_SERVICE_GUARD(fsldr);
 NX_INLINE Result _fsldrSetCurrentProcess(void);
 
 Result _fsldrInitialize(void) {
+    // [Switch 2] An fsp-ldr override is a clone of the fsp-ldr root that the
+    // loader retains. Every clone shares that root's object, and
+    // SetCurrentProcess would bind the shared object to this process, so it
+    // is not sent on an override. serviceConvertToDomain converts a clone of
+    // the override.
+#if defined(__SWITCH2__)
+    bool preinitialized = smGetServiceOverride(smEncodeName("fsp-ldr")) != INVALID_HANDLE;
+#else
+    bool preinitialized = false;
+#endif
     Result rc = smGetService(&g_fsldrSrv, "fsp-ldr");
 
     if (R_SUCCEEDED(rc)) {
         rc = serviceConvertToDomain(&g_fsldrSrv);
     }
 
-    if (R_SUCCEEDED(rc) && hosversionAtLeast(4,0,0)) {
+    if (R_SUCCEEDED(rc) && !preinitialized && hosversionAtLeast(4,0,0)) {
         rc = _fsldrSetCurrentProcess();
     }
 
