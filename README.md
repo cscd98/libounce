@@ -16,6 +16,18 @@ make install
 `make switch1` and `make install-switch1` build plain libnx and install it
 into `$DEVKITPRO/libnx`, as upstream does.
 
+## Packages
+
+Each release has a package for devkitPro's pacman:
+
+```sh
+dkp-pacman -U libounce-20261117-1-any.pkg.tar.zst
+```
+
+It installs the same files as `make install`. `packaging/Dockerfile` builds
+it with `dkp-makepkg` in devkitPro's image, and `packaging/release.sh VERSION`
+builds it from a commit and publishes the release.
+
 ## Use
 
 In a Makefile where libnx is used, include libounce's rules in place of libnx's:

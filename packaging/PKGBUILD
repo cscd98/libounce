@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: ISC
+#
+# libounce's pacman package, for devkitPro's pacman (dkp-pacman). Dockerfile
+# builds it with dkp-makepkg from this repository's tree:
+#   LIBOUNCE_VERSION=20261117 dkp-makepkg
+# It installs what `make install` installs: $DEVKITPRO/libounce.
+
+pkgname=libounce
+pkgver=${LIBOUNCE_VERSION:?set LIBOUNCE_VERSION to the release version}
+pkgrel=1
+pkgdesc='libnx with Switch 2 support'
+arch=('any')
+url='https://github.com/ouncebrew/libounce'
+license=('ISC' 'MIT')
+groups=('ounce-devkit')
+makedepends=('devkitA64')
+# Static AArch64 archives: the host's strip must not touch them.
+options=(!strip staticlibs)
+
+# The repository is the folder above this one; makepkg builds a copy of it.
+prepare() {
+    rm -rf "$srcdir/libounce"
+    mkdir -p "$srcdir/libounce"
+    tar -C "$startdir/.." --exclude=./packaging -cf - . | tar -C "$srcdir/libounce" -xf -
+}
+
+build() {
+    make -C "$srcdir/libounce/nx" -j"$(nproc)" switch2
+}
+
+package() {
+    make -C "$srcdir/libounce/nx" install-switch2 DESTDIR="$pkgdir"
+}
