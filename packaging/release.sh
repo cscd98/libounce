@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: ISC
 #
 # Builds libounce's pacman package from a commit and publishes it as a GitHub
-# release of this repository:
+# release of this repository. Pushing a version tag runs it on GitHub
+# (.github/workflows/release.yaml); it runs the same way here:
 #   sh packaging/release.sh VERSION [COMMIT]
 # VERSION is the release and package version: the date, as 20261117, and
 # 20261117.1 for a second release on the same day (pacman orders 20261117 <
 # 20261117.1). COMMIT defaults to HEAD; it must be on the GitHub repository
 # already. The package and its SHA-256 are written to packaging/release/VERSION/.
+# When the tag VERSION is annotated, its message begins the release notes.
 #
 # Environment:
 #   CONTAINER   podman or docker (default: podman when it is installed)
@@ -44,6 +46,11 @@ cat "$out/$package.sha256"
 if [ "${NO_UPLOAD:-0}" = 1 ]; then
     exit 0
 fi
+notes="$context/release-notes"
+if [ "$(git cat-file -t "refs/tags/$version" 2> /dev/null)" = tag ]; then
+    git tag -l --format='%(contents)' "$version" > "$notes"
+    echo >> "$notes"
+fi
+echo "Install with devkitPro's pacman: \`dkp-pacman -U $package\`." >> "$notes"
 gh release create "$version" --target "$commit" --title "libounce $version" \
-    --notes "Install with devkitPro's pacman: \`dkp-pacman -U $package\`." \
-    "$out/$package" "$out/$package.sha256"
+    --notes-file "$notes" "$out/$package" "$out/$package.sha256"

@@ -25,8 +25,10 @@ dkp-pacman -U libounce-20261117-1-any.pkg.tar.zst
 ```
 
 It installs the same files as `make install`. `packaging/Dockerfile` builds
-it with `dkp-makepkg` in devkitPro's image, and `packaging/release.sh VERSION`
-builds it from a commit and publishes the release.
+it with `dkp-makepkg` in devkitPro's image. Pushing a version tag (the date,
+as `20261118`) builds the package on GitHub and publishes the release, with
+the annotated tag's message as its notes; `packaging/release.sh` does the
+same locally.
 
 ## Use
 
