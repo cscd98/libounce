@@ -785,6 +785,26 @@ Result nsResumeApplicationDownload(u64 application_id) {
     return _nsManCmdInU64(application_id, 33);
 }
 
+Result nsPushLaunchVersion(u64 application_id, u32 version) {
+    Service srv={0}, *srv_ptr = &srv;
+    Result rc=0;
+    if (hosversionAtLeast(3,0,0))
+        rc = nsGetApplicationManagerInterface(&srv);
+    else
+        srv_ptr = &g_nsAppManSrv;
+
+    const struct {
+        u32 version;
+        u32 pad;
+        u64 application_id;
+    } in = { version, 0, application_id };
+
+    if (R_SUCCEEDED(rc)) rc = serviceDispatchIn(srv_ptr, 36, in);
+
+    serviceClose(&srv);
+    return rc;
+}
+
 Result nsCheckApplicationLaunchVersion(u64 application_id) {
     return _nsManCmdInU64(application_id, 38);
 }
