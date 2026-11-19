@@ -484,6 +484,13 @@ Result nsCancelApplicationDownload(u64 application_id);
 Result nsResumeApplicationDownload(u64 application_id);
 
 /**
+ * @brief PushLaunchVersion
+ * @param[in] application_id ApplicationId.
+ * @param[in] version Launch version.
+ */
+Result nsPushLaunchVersion(u64 application_id, u32 version);
+
+/**
  * @brief CheckApplicationLaunchVersion
  * @param[in] application_id ApplicationId.
  */
