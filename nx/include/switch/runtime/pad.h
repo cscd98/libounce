@@ -250,6 +250,7 @@ typedef struct {
  */
 typedef struct {
     bool active;                ///< A Joy-Con pointer is in use on the pad's controllers.
+    bool engaged;               ///< If a Joy-Con 2 is actively being used as a mouse
     PadPointerSide side;        ///< Which Joy-Con the pointer follows.
     s32 x;                      ///< Pointer X, from 0 to the width given to \ref padPointerInitialize minus 1.
     s32 y;                      ///< Pointer Y, from 0 to the height minus 1.
