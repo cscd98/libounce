@@ -92,9 +92,11 @@ Result usbDsGetDsInterface(UsbDsInterface** out, struct usb_interface_descriptor
 Result usbDsSetVidPidBcd(const UsbDsDeviceInfo* deviceinfo);
 
 /// Only available on [5.0.0+].
+/// @note [Switch 2] The control completion events (CtrlInCompletionEvent, CtrlOutCompletionEvent) are not created: the interface has none.
 Result usbDsRegisterInterface(UsbDsInterface** out);
 
 /// Only available on [5.0.0+].
+/// @note [Switch 2] The control completion events (CtrlInCompletionEvent, CtrlOutCompletionEvent) are not created: the interface has none.
 Result usbDsRegisterInterfaceEx(UsbDsInterface** out, u8 intf_num);
 
 /// Only available on [5.0.0+].
@@ -113,6 +115,7 @@ Result usbDsDeleteUsbStringDescriptor(u8 index);
 Result usbDsSetUsbDeviceDescriptor(UsbDeviceSpeed speed, struct usb_device_descriptor* descriptor);
 
 /// Only available on [5.0.0+].
+/// @note [Switch 2] The store is at most 0x20 bytes. The service rejects a larger one (0xcd25) and does not truncate it.
 Result usbDsSetBinaryObjectStore(const void* bos, size_t bos_size);
 
 /// Only available on [5.0.0+].
@@ -134,9 +137,15 @@ void usbDsInterface_Close(UsbDsInterface* interface);
 Result usbDsInterface_GetSetupPacket(UsbDsInterface* interface, void* buffer, size_t size);
 Result usbDsInterface_EnableInterface(UsbDsInterface* interface);
 Result usbDsInterface_DisableInterface(UsbDsInterface* interface);
+/// @note [Switch 2] Control transfers have no completion event or report data.
+/// @note [Switch 2] \p buffer must be 0x1000-byte aligned. The service rejects other buffers (0xcf25).
 Result usbDsInterface_CtrlInPostBufferAsync(UsbDsInterface* interface, void* buffer, size_t size, u32* urbId);
+/// @note [Switch 2] Control transfers have no completion event or report data.
+/// @note [Switch 2] \p buffer must be 0x1000-byte aligned. The service rejects other buffers (0xcf25).
 Result usbDsInterface_CtrlOutPostBufferAsync(UsbDsInterface* interface, void* buffer, size_t size, u32* urbId);
+/// @note [Switch 2] Not available: returns LibnxError_IncompatSysVer. Control transfers have no report data.
 Result usbDsInterface_GetCtrlInReportData(UsbDsInterface* interface, UsbDsReportData* out);
+/// @note [Switch 2] Not available: returns LibnxError_IncompatSysVer. Control transfers have no report data.
 Result usbDsInterface_GetCtrlOutReportData(UsbDsInterface* interface, UsbDsReportData* out);
 Result usbDsInterface_StallCtrl(UsbDsInterface* interface);
 
@@ -157,6 +166,7 @@ Result usbDsInterface_AppendConfigurationData(UsbDsInterface* interface, UsbDevi
 void usbDsEndpoint_Close(UsbDsEndpoint* endpoint);
 
 Result usbDsEndpoint_Cancel(UsbDsEndpoint* endpoint);
+/// @note [Switch 2] \p buffer must be 0x1000-byte aligned. The service rejects other buffers (0xcf25).
 Result usbDsEndpoint_PostBufferAsync(UsbDsEndpoint* endpoint, void* buffer, size_t size, u32* urbId);
 Result usbDsEndpoint_GetReportData(UsbDsEndpoint* endpoint, UsbDsReportData* out);
 Result usbDsEndpoint_Stall(UsbDsEndpoint* endpoint);
