@@ -4,26 +4,7 @@
  * @author TheAJLive, kurumuz
  * @copyright 2026 libounce contributors
  * @license ISC
- * @note A host session runs in this order:
- *       1. \ref stplInitialize, then \ref stplGetRequiredMemorySize for the
- *          streaming mode and the most guests.
- *       2. \ref stplInitializeHost. Then set the guest input configuration
- *          (\ref stplSetGuestNpadStyleSet, \ref stplSetGuestNpadJoyHoldType,
- *          \ref stplSetGuestHidFeatures, \ref stplSetGuestTouchScreenRange)
- *          and \ref stplSetAudioMix.
- *       3. Check \ref stplGetStreamType and \ref stplGetStreamingMode, then give
- *          the service its work memory with \ref stplRegisterWorkMemory.
- *       4. \ref stplCreateMatchmakingArgument, then the system matchmaking
- *          applet with that argument.
- *       5. \ref stplGetGuestCapacity, \ref stplStartGuest for each guest slot
- *          up to the capacity and the most guests, then \ref stplStartStreaming.
- *       6. While streaming: \ref stplGetConnectionState, the guest input
- *          readers, guest audio, vibration and profiles.
- *       7. Close: \ref stplCloseSession after a matchmaking that returned
- *          guests, or \ref stplEndMatchmaking and \ref stplReleaseGuestWorkMemory
- *          after a cancelled one; then \ref stplFinalizeHost and \ref stplExit.
- *          The service returns the work memory after its session closes:
- *          free it only after \ref stplWaitForWorkMemory succeeds.
+ * @note \ref gameshare.h "gameshare.h" runs a host session with these commands in the order the service needs.
  */
 #pragma once
 #if !defined(__SWITCH2__)
