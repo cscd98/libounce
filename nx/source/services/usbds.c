@@ -308,6 +308,11 @@ Result usbDsSetVidPidBcd(const UsbDsDeviceInfo* deviceinfo) {
 }
 
 static Result _usbDsPostBuffer(Service* srv, void* buffer, size_t size, u32 *urbId, u32 cmd_id) {
+#if defined(__SWITCH2__)
+    // [Switch 2] The server requires 4KiB-aligned buffer addresses.
+    if ((uintptr_t)buffer & 0xfff)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+#endif
     armDCacheFlush(buffer, size);
 
     const struct {
@@ -424,12 +429,15 @@ Result usbDsRegisterInterface(UsbDsInterface** interface) {
     // GetSetupEvent
     if (R_SUCCEEDED(rc))
         rc = _usbDsGetEvent(&ptr->s, &ptr->SetupEvent, false, 1);
+#if !defined(__SWITCH2__)
+    // [Switch 2] Ctrl completion events were removed; cmds 3/4 complete on their own.
     // GetCtrlInCompletionEvent
     if (R_SUCCEEDED(rc))
         rc = _usbDsGetEvent(&ptr->s, &ptr->CtrlInCompletionEvent, false, hosversionAtLeast(11,0,0) ? 5 : 7);
     // GetCtrlOutCompletionEvent
     if (R_SUCCEEDED(rc))
         rc = _usbDsGetEvent(&ptr->s, &ptr->CtrlOutCompletionEvent, false, hosversionAtLeast(11,0,0) ? 7 : 9);
+#endif
 
     if (R_FAILED(rc))
         _usbDsFreeInterface(ptr);
@@ -451,12 +459,14 @@ Result usbDsRegisterInterfaceEx(UsbDsInterface** interface, u8 intf_num) {
     // GetSetupEvent
     if (R_SUCCEEDED(rc))
         rc = _usbDsGetEvent(&ptr->s, &ptr->SetupEvent, false, 1);
+#if !defined(__SWITCH2__)
     // GetCtrlInCompletionEvent
     if (R_SUCCEEDED(rc))
         rc = _usbDsGetEvent(&ptr->s, &ptr->CtrlInCompletionEvent, false, hosversionAtLeast(11,0,0) ? 5 : 7);
     // GetCtrlOutCompletionEvent
     if (R_SUCCEEDED(rc))
         rc = _usbDsGetEvent(&ptr->s, &ptr->CtrlOutCompletionEvent, false, hosversionAtLeast(11,0,0) ? 7 : 9);
+#endif
 
     if (R_FAILED(rc))
         _usbDsFreeInterface(ptr);
@@ -640,19 +650,33 @@ Result usbDsInterface_CtrlOutPostBufferAsync(UsbDsInterface* interface, void* bu
 Result usbDsInterface_GetCtrlInReportData(UsbDsInterface* interface, UsbDsReportData *out) {
     if (!interface->initialized) return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
 
+#if defined(__SWITCH2__)
+    // [Switch 2] Ctrl transfers complete inside cmds 3/4; this command no longer exists.
+    return MAKERESULT(Module_Libnx, LibnxError_IncompatSysVer);
+#else
     return _usbDsGetReport(&interface->s, out, hosversionAtLeast(11,0,0) ? 6 : 8);
+#endif
 }
 
 Result usbDsInterface_GetCtrlOutReportData(UsbDsInterface* interface, UsbDsReportData *out) {
     if (!interface->initialized) return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
 
+#if defined(__SWITCH2__)
+    return MAKERESULT(Module_Libnx, LibnxError_IncompatSysVer);
+#else
     return _usbDsGetReport(&interface->s, out, hosversionAtLeast(11,0,0) ? 8 : 10);
+#endif
 }
 
 Result usbDsInterface_StallCtrl(UsbDsInterface* interface) {
     if (!interface->initialized) return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
 
+#if defined(__SWITCH2__)
+    // [Switch 2] StallCtrl moved from cmd 9 to cmd 5.
+    return _usbDsCmdNoIO(&interface->s, 5);
+#else
     return _usbDsCmdNoIO(&interface->s, hosversionAtLeast(11,0,0) ? 9 : 11);
+#endif
 }
 
 Result usbDsInterface_RegisterEndpoint(UsbDsInterface* interface, UsbDsEndpoint** endpoint, u8 endpoint_address) {
@@ -696,7 +720,12 @@ Result usbDsInterface_AppendConfigurationData(UsbDsInterface* interface, UsbDevi
     }
 
     u32 in = speed;
+#if defined(__SWITCH2__)
+    // [Switch 2] AppendConfigurationData moved from cmd 10 to cmd 6.
+    return serviceDispatchIn(&interface->s, 6, in,
+#else
     return serviceDispatchIn(&interface->s, 10, in,
+#endif
         .buffer_attrs = { SfBufferAttr_HipcMapAlias | SfBufferAttr_In },
         .buffers = { { buffer, size } },
     );
