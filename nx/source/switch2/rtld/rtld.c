@@ -17,6 +17,13 @@
  * __appInit, __nx_heap_size and the like) and the ones only a program has
  * (main): the code reaches those through the GOT, which is not filled in
  * until _rtldLinkProgram returns.
+ *
+ * A C++ exception can pass from one module to another. libgcc's unwinder,
+ * which each module that needs it links statically, asks _Unwind_Find_FDE
+ * for the unwind entry of every return address. libgcc's own answers from a
+ * list that a statically linked program's crtbegin.o registers its entries
+ * in. The one here takes its place for all modules and answers from the
+ * module that contains the address.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -187,6 +194,26 @@ void _rtldSetupMainTls(void) {
     fake_heap_start = area + size;
     initializeTlsArea(area);
     getThreadVars()->tls_tp = area - g_rtldProgram.tls_start_offset;
+}
+
+// What libgcc's unwinder keeps with an unwind entry (struct dwarf_eh_bases
+// in its unwind-dw2-fde.h): the bases of text-relative and data-relative
+// addresses, which AArch64 does not use, and the function's first address.
+typedef struct {
+    void* text_base;
+    void* data_base;
+    void* function;
+} RtldUnwindBases;
+
+const void* _Unwind_Find_FDE(void* address, RtldUnwindBases* bases) {
+    uintptr_t function = 0;
+    const void* entry = dynlinkProgramFindUnwindEntry(&g_rtldProgram, (uintptr_t)address, &function);
+    if (entry) {
+        bases->text_base = NULL;
+        bases->data_base = NULL;
+        bases->function = (void*)function;
+    }
+    return entry;
 }
 
 static void _rtldRunDestructors(void) {

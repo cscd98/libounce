@@ -153,7 +153,8 @@ switch2:
 # links a program or a shared library against it (lib/shared, and the start
 # object of a module).
 shared:
-	@$(MAKE) SWITCH2=1 SHARED=1 lib/shared/nro/libounce.so.1 lib/shared/names lib/ounce_module_crt0.o
+	@$(MAKE) SWITCH2=1 SHARED=1 lib/shared/nro/libounce.so.1 lib/shared/nro/libstdc++.so.6 \
+		lib/shared/names lib/ounce_module_crt0.o
 
 # Installs libounce.so beside the static library. A program links it with
 # -specs=$(DEVKITPRO)/libounce/switch_shared.specs.
@@ -161,8 +162,10 @@ install-shared: shared
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/lib/shared/nro
 	@cp -v switch_shared.specs $(DESTDIR)$(DEVKITPRO)/libounce/
 	@cp -v lib/ounce_module_crt0.o $(DESTDIR)$(DEVKITPRO)/libounce/lib/
-	@cp -v lib/shared/lib*.so lib/shared/libounce.so.1 $(DESTDIR)$(DEVKITPRO)/libounce/lib/shared/
-	@cp -v lib/shared/nro/libounce.so.1 $(DESTDIR)$(DEVKITPRO)/libounce/lib/shared/nro/
+	@cp -v lib/shared/lib*.so lib/shared/libounce.so.1 lib/shared/libstdc++.so.6 \
+		$(DESTDIR)$(DEVKITPRO)/libounce/lib/shared/
+	@cp -v lib/shared/nro/libounce.so.1 lib/shared/nro/libstdc++.so.6 \
+		$(DESTDIR)$(DEVKITPRO)/libounce/lib/shared/nro/
 
 switch1: lib/libnx.a lib/libnxd.a
 
@@ -357,6 +360,7 @@ lib/libounce_shared.a : lib release-switch2-shared $(SOURCES) $(INCLUDES)
 SHARED_BUILD	:=	release-switch2-shared
 SHARED_NEWLIB	:=	libc.a libm.a libsysbase.a
 SHARED_NAMES	:=	libounce.so libnx.so libc.so libg.so libm.so libpthread.so libsysbase.so
+SHARED_CXX_NAMES	:=	libstdc++.so libsupc++.so
 
 # The symbols that a program can replace are libounce's weak definitions:
 # __appInit, __nx_heap_size, malloc and the like. Every other reference in
@@ -377,7 +381,7 @@ $(SHARED_BUILD)/newlib.txt : lib/libounce_shared.a ../toolchain/newlib-for-share
 lib/shared/libounce.so.1 : lib/libounce_shared.a $(SHARED_BUILD)/libounce.hooks $(SHARED_BUILD)/newlib.txt switch.ld | lib/shared
 	$(CC) $(ARCH) -shared -nostdlib -nostartfiles -Wl,-T,switch.ld -Wl,-soname,libounce.so.1 \
 		-Wl,-z,text -Wl,-z,now -Wl,-z,pack-relative-relocs -Wl,--build-id=sha1 -Wl,--hash-style=gnu \
-		-Wl,--dynamic-list=$(SHARED_BUILD)/libounce.hooks \
+		-Wl,--eh-frame-hdr -Wl,--dynamic-list=$(SHARED_BUILD)/libounce.hooks \
 		-Wl,--whole-archive lib/libounce_shared.a \
 		$(foreach lib,$(SHARED_NEWLIB),$(SHARED_BUILD)/newlib/$(lib)) -Wl,--no-whole-archive \
 		-lgcc -Wl,-Map,$(SHARED_BUILD)/libounce.map -o $(SHARED_BUILD)/libounce.so.1
@@ -390,12 +394,30 @@ lib/shared/libounce.so.1 : lib/libounce_shared.a $(SHARED_BUILD)/libounce.hooks 
 # With lib/shared first in the library path (switch_shared.specs), -lounce,
 # -lnx and the names of newlib's own libraries all find libounce.so.1, and
 # never a static archive beside it.
-lib/shared/names : $(addprefix lib/shared/,$(SHARED_NAMES))
+lib/shared/names : $(addprefix lib/shared/,$(SHARED_NAMES) $(SHARED_CXX_NAMES))
 
 $(addprefix lib/shared/,$(SHARED_NAMES)) : lib/shared/libounce.so.1
 	@echo 'INPUT(libounce.so.1)' > $@
 
 lib/shared/nro/libounce.so.1 : lib/shared/libounce.so.1
+	@mkdir -p lib/shared/nro
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@
+
+# The toolchain's C++ library as a shared library on libounce.so: one C++
+# runtime for a program and its libraries. With a static copy in each
+# module, an exception that one module throws would be caught by another
+# module's runtime. Everything it needs is in libounce.so, or the link fails.
+lib/shared/libstdc++.so.6 : lib/shared/libounce.so.1 lib/ounce_module_crt0.o switch.ld
+	$(CC) $(ARCH) -shared -nostdlib -nostartfiles -Wl,-T,switch.ld -Wl,-soname,libstdc++.so.6 \
+		-Wl,-z,text -Wl,-z,now -Wl,-z,pack-relative-relocs -Wl,--build-id=sha1 -Wl,--hash-style=gnu \
+		-Wl,--eh-frame-hdr -Wl,-z,defs lib/ounce_module_crt0.o \
+		-Wl,--whole-archive $(shell $(CXX) $(ARCH) -print-file-name=libstdc++.a) -Wl,--no-whole-archive \
+		lib/shared/libounce.so.1 -lgcc -o $@
+
+$(addprefix lib/shared/,$(SHARED_CXX_NAMES)) : lib/shared/libstdc++.so.6
+	@echo 'INPUT(libstdc++.so.6)' > $@
+
+lib/shared/nro/libstdc++.so.6 : lib/shared/libstdc++.so.6
 	@mkdir -p lib/shared/nro
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@
 

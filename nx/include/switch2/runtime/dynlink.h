@@ -55,6 +55,7 @@ typedef struct DynlinkLoadInfo {
 /// One module: a parsed NRO image.
 typedef struct DynlinkModule {
     uintptr_t base;                             ///< Address of the image's first byte.
+    size_t size;                                ///< Size of the image with its BSS.
     const Elf64_Dyn* dynamic;                   ///< The dynamic section.
     const char* soname;                         ///< DT_SONAME, NULL for a program.
     const Elf64_Sym* symtab;                    ///< Dynamic symbol table.
@@ -80,6 +81,8 @@ typedef struct DynlinkModule {
     size_t tls_size;                            ///< Size of the module's thread-local block.
     size_t tls_align;                           ///< Its alignment.
     size_t tls_offset;                          ///< Offset of the block in a thread's TLS area, set by \ref dynlinkProgramLayoutTls.
+    const void* eh_frame_hdr;                   ///< Index of the unwind entries (.eh_frame_hdr), or NULL.
+    size_t eh_frame_hdr_size;                   ///< Its size.
     void* relro;                                ///< Data that is read-only after relocation, or NULL.
     size_t relro_size;                          ///< Its size.
     uintptr_t runtime_entry;                    ///< Entry of the runtime library; zero for every other module.
@@ -154,6 +157,17 @@ void dynlinkProgramLayoutTls(DynlinkProgram* p);
  *         relocation type that is not supported.
  */
 Result dynlinkProgramRelocate(DynlinkProgram* p, const char** out_symbol);
+
+/**
+ * @brief Finds the unwind entry (FDE) of the function that contains an address.
+ * @param[in] p Program.
+ * @param[in] address Address in the code of one of the modules.
+ * @param[out] out_function Address of the function's first instruction.
+ * @return The entry in the module's .eh_frame section, or NULL when the address is in no module
+ *         or in code without unwind information.
+ * @note A module has the index that this reads when it is linked with --eh-frame-hdr.
+ */
+const void* dynlinkProgramFindUnwindEntry(const DynlinkProgram* p, uintptr_t address, uintptr_t* out_function);
 
 /**
  * @brief Runs the constructors of every module, each after the libraries it needs.

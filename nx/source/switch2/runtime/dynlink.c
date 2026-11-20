@@ -19,6 +19,11 @@
  * and the program's TLS alignment), then the program's block, then each
  * library's block at its alignment. A TLS_TPREL relocation gets the distance
  * from the thread pointer to its variable.
+ *
+ * Unwinding reads a module's .eh_frame_hdr section, which MOD0 locates: a
+ * table of every function's first address and unwind entry, sorted by
+ * address. GNU ld writes it with --eh-frame-hdr, and always in one format,
+ * the only one read here.
  */
 #include <string.h>
 #include "switch2/runtime/dynlink.h"
@@ -144,7 +149,14 @@ Result dynlinkModuleOpen(DynlinkModule* m, const void* image, size_t size) {
         return _dynlinkBadImage();
 
     m->base = (uintptr_t)image;
+    m->size = size;
     m->dynamic = (const Elf64_Dyn*)(bytes + dynamic_offset);
+    const s64 eh_frame_hdr_size = (s64)header.eh_frame_hdr_end_offset - header.eh_frame_hdr_start_offset;
+    const u64 eh_frame_hdr_offset = (u64)mod0_offset + (s64)header.eh_frame_hdr_start_offset;
+    if (eh_frame_hdr_size > 0 && _dynlinkIsInside(size, eh_frame_hdr_offset, (u64)eh_frame_hdr_size)) {
+        m->eh_frame_hdr = bytes + eh_frame_hdr_offset;
+        m->eh_frame_hdr_size = (size_t)eh_frame_hdr_size;
+    }
     m->tls_align = 1;
     _dynlinkReadBlocks(m, mod0, mod0_offset, size);
 
@@ -468,6 +480,150 @@ Result dynlinkProgramRelocate(DynlinkProgram* p, const char** out_symbol) {
     }
     if (out_symbol) *out_symbol = missing;
     return rc;
+}
+
+//-----------------------------------------------------------------------------
+// Unwind entries
+//-----------------------------------------------------------------------------
+
+// DWARF pointer encodings (DW_EH_PE_*): the low four bits give the value's
+// format, the next three what it is relative to.
+#define EH_FORMAT_ABSOLUTE      0x00
+#define EH_FORMAT_UDATA2        0x02
+#define EH_FORMAT_UDATA4        0x03
+#define EH_FORMAT_UDATA8        0x04
+#define EH_FORMAT_SDATA2        0x0A
+#define EH_FORMAT_SDATA4        0x0B
+#define EH_FORMAT_SDATA8        0x0C
+#define EH_ENCODING_OMITTED     0xFF
+// The encodings of the .eh_frame_hdr that GNU ld writes: the section's
+// address as a 4-byte offset from the field, the entry count as 4 bytes, and
+// the table as 4-byte offsets from the start of the section.
+#define EH_HDR_VERSION          1
+#define EH_HDR_FRAME_ENCODING   0x1B
+#define EH_HDR_COUNT_ENCODING   0x03
+#define EH_HDR_TABLE_ENCODING   0x3B
+#define EH_HDR_TABLE_OFFSET     12
+
+typedef struct {
+    s32 function_offset;    // The function's first address, from the start of .eh_frame_hdr.
+    s32 entry_offset;       // Its unwind entry, from the same place.
+} EhFrameHdrEntry;
+
+// The size of a value in a pointer encoding, or 0 for a format with no fixed size.
+static size_t _dynlinkEncodedSize(u8 encoding) {
+    switch (encoding & 0x0F) {
+        case EH_FORMAT_ABSOLUTE: return sizeof(u64);
+        case EH_FORMAT_UDATA2:
+        case EH_FORMAT_SDATA2:   return sizeof(u16);
+        case EH_FORMAT_UDATA4:
+        case EH_FORMAT_SDATA4:   return sizeof(u32);
+        case EH_FORMAT_UDATA8:
+        case EH_FORMAT_SDATA8:   return sizeof(u64);
+        default:                 return 0;
+    }
+}
+
+// Steps over a LEB128 number.
+static const u8* _dynlinkSkipLeb128(const u8* bytes) {
+    while (*bytes & 0x80)
+        bytes++;
+    return bytes + 1;
+}
+
+// The encoding of the addresses in the unwind entries of a CIE: its 'R'
+// augmentation, or absolute addresses without one. Returns
+// EH_ENCODING_OMITTED for a CIE that cannot be read.
+static u8 _dynlinkCieAddressEncoding(const u8* cie) {
+    const u8 version = cie[8];
+    const char* augmentation = (const char*)(cie + 9);
+    const u8* bytes = (const u8*)augmentation + strlen(augmentation) + 1;
+    if (augmentation[0] != 'z')
+        return augmentation[0] == '\0' ? EH_FORMAT_ABSOLUTE : EH_ENCODING_OMITTED;
+
+    bytes = _dynlinkSkipLeb128(bytes);                          // Code alignment.
+    bytes = _dynlinkSkipLeb128(bytes);                          // Data alignment.
+    bytes = version == 1 ? bytes + 1 : _dynlinkSkipLeb128(bytes); // Return address register.
+    bytes = _dynlinkSkipLeb128(bytes);                          // Size of the augmentation data.
+
+    for (const char* letter = augmentation + 1; *letter; letter++) {
+        if (*letter == 'R')
+            return *bytes;
+        if (*letter == 'L') {
+            bytes++;
+        } else if (*letter == 'P') {
+            // The personality routine: an encoding, then its address.
+            const size_t size = _dynlinkEncodedSize(*bytes);
+            if (!size)
+                return EH_ENCODING_OMITTED;
+            bytes += 1 + size;
+        }
+        // 'S', 'B' and 'G' have no data.
+    }
+    return EH_FORMAT_ABSOLUTE;
+}
+
+// The size of the function that an unwind entry describes, or 0 for an entry
+// that cannot be read. The entry is its length, the distance back to its CIE,
+// the function's address and the function's size.
+static u64 _dynlinkUnwindEntryRange(const u8* entry) {
+    u32 cie_distance;
+    memcpy(&cie_distance, entry + 4, sizeof(cie_distance));
+    const u8 encoding = _dynlinkCieAddressEncoding(entry + 4 - cie_distance);
+    const size_t size = _dynlinkEncodedSize(encoding);
+    if (encoding == EH_ENCODING_OMITTED || !size)
+        return 0;
+
+    u64 range = 0;
+    memcpy(&range, entry + 8 + size, size);
+    return range;
+}
+
+const void* dynlinkProgramFindUnwindEntry(const DynlinkProgram* p, uintptr_t address, uintptr_t* out_function) {
+    const DynlinkModule* m = NULL;
+    for (u32 i = 0; i < p->module_count && !m; i++) {
+        if (address >= p->modules[i]->base && address - p->modules[i]->base < p->modules[i]->size)
+            m = p->modules[i];
+    }
+    if (!m || m->eh_frame_hdr_size < EH_HDR_TABLE_OFFSET)
+        return NULL;
+
+    const u8* hdr = (const u8*)m->eh_frame_hdr;
+    if (hdr[0] != EH_HDR_VERSION || hdr[1] != EH_HDR_FRAME_ENCODING || hdr[2] != EH_HDR_COUNT_ENCODING ||
+        hdr[3] != EH_HDR_TABLE_ENCODING)
+        return NULL;
+
+    u32 count;
+    memcpy(&count, hdr + 8, sizeof(count));
+    if (count > (m->eh_frame_hdr_size - EH_HDR_TABLE_OFFSET) / sizeof(EhFrameHdrEntry))
+        return NULL;
+
+    // The last function that starts at or before the address.
+    const u8* table = hdr + EH_HDR_TABLE_OFFSET;
+    const s64 offset = (s64)(address - (uintptr_t)hdr);
+    u32 low = 0;
+    u32 high = count;
+    while (low < high) {
+        const u32 middle = low + (high - low) / 2;
+        EhFrameHdrEntry candidate;
+        memcpy(&candidate, table + (size_t)middle * sizeof(candidate), sizeof(candidate));
+        if (candidate.function_offset <= offset)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    if (!low)
+        return NULL;
+
+    EhFrameHdrEntry found;
+    memcpy(&found, table + (size_t)(low - 1) * sizeof(found), sizeof(found));
+    const u8* entry = hdr + found.entry_offset;
+    const uintptr_t function = (uintptr_t)hdr + found.function_offset;
+    if (address - function >= _dynlinkUnwindEntryRange(entry))
+        return NULL;
+
+    *out_function = function;
+    return entry;
 }
 
 static u32 _dynlinkModuleIndex(const DynlinkProgram* p, const DynlinkModule* m) {
