@@ -342,9 +342,9 @@ Result nwindowReleaseVi2Layer(NWindow* nw)
     // A window of nwindowCreateForDisplay keeps its layer until nwindowClose.
     if (nw != &g_defaultWin)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
-    if (cpuwinDefaultHasImages())
+    if (cpuwinHasImages(nw))
         return MAKERESULT(Module_Libnx, LibnxError_AlreadyInitialized);
-    if (!cpuwinCloseDefault())
+    if (!cpuwinCloseFor(nw))
         return MAKERESULT(Module_Libnx, LibnxError_BadGfxQueueBuffer);
     return _nwindowCloseVi2Layer();
 }
@@ -353,7 +353,7 @@ Result nwindowReleaseVi2Layer(NWindow* nw)
 // cannot be retired, the layer stays open. A producer may still present to it.
 void __nx_win_exit(void)
 {
-    if (!cpuwinCloseDefault())
+    if (!cpuwinCloseFor(&g_defaultWin))
         return;
     _nwindowCloseVi2Layer();
 }

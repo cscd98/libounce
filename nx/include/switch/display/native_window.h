@@ -69,10 +69,11 @@ NWindow* nwindowGetDefault(void);
  * @param[in] display_name Name of the display, for example "player1": the display of
  *            the first guest of a GameShare session with separate views.
  * @note The window is like the default window: it has no buffer queue, and a producer
- *       presents its own images to the window's layer (\ref nwindowGetVi2Layer). A
- *       Vulkan swapchain can be created on it. \ref framebufferCreate cannot use it.
+ *       presents its own images to the window's layer (\ref nwindowGetVi2Layer):
+ *       a framebuffer (\ref framebufferCreate) or a Vulkan swapchain.
  * @note Its size is 1280x720 until \ref nwindowSetDimensions, and it paces with its swap
- *       interval. \ref nwindowClose closes its layer and display; stop presenting to it first.
+ *       interval. \ref nwindowClose closes its layer and display. Close a framebuffer
+ *       or swapchain on it first: the window stays open while a framebuffer exists.
  * @note A process can have four such windows.
  */
 Result nwindowCreateForDisplay(NWindow* nw, const char* display_name);

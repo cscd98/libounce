@@ -146,6 +146,12 @@ Result _nwindowCloseDisplayWindow(NWindow* nw)
     if (!nw || !entry)
         return 0;
 
+    // A framebuffer on the window presents to the layer: close it first.
+    if (cpuwinHasImages(nw))
+        return MAKERESULT(Module_Libnx, LibnxError_AlreadyInitialized);
+    if (!cpuwinCloseFor(nw))
+        return MAKERESULT(Module_Libnx, LibnxError_BadGfxQueueBuffer);
+
     Result rc = _vi2WindowCloseLayer(&entry->vi2);
     if (R_SUCCEEDED(rc))
         rc = _vi2WindowCloseDisplay(&entry->vi2);

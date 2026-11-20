@@ -21,15 +21,11 @@ typedef struct {
     Vi2Dependency release;  ///< The display's release of its last present. Zero before the first present.
 } CpuWindowImage;
 
-/// A VI2 layer with the GPU state its CPU images need.
+/// A window's CPU images on its NWindow's VI2 layer. The windows share one GPU session.
 typedef struct {
     bool is_open;
-    GsvSync sync;
-    GsvGpu gpu;
-    Event slot_event;
-    u8 client;
-    u32 as_fd;
-    Vi2Layer* layer;         ///< The default window's layer (nwindowGetVi2Layer).
+    NWindow* nw;             ///< The NWindow that this window presents for.
+    Vi2Layer* layer;         ///< That NWindow's layer (nwindowGetVi2Layer).
 
     void* backing;           ///< CPU memory of all images, registered with the GPU worker.
     u64 backing_size;
@@ -40,9 +36,9 @@ typedef struct {
     CpuWindowImage images[CPUWIN_MAX_IMAGES];
 } CpuWindow;
 
-/// Opens the window: GPU state and the default window's VI2 layer.
-Result cpuwinOpen(CpuWindow* w);
-/// Closes the window. Destroy its images first.
+/// Opens the window for an NWindow with a VI2 layer: the shared GPU session and that layer.
+Result cpuwinOpen(CpuWindow* w, NWindow* nw);
+/// Closes the window. Destroy its images first. The last window closes the GPU session.
 void cpuwinClose(CpuWindow* w);
 
 /// Gets the size of one image (RGBA8, Turing 2D block-linear, 16-GOB blocks).
@@ -69,10 +65,11 @@ u32 cpuwinPixelOffset(u32 width, u32 x, u32 y);
 /// Makes a valid NWindow without a binder queue (defined in display/native_window.c).
 void _nwindowCreateForCpuWindow(NWindow* nw);
 
-/// The default NWindow's window. It opens on first use. NULL if it cannot open.
-CpuWindow* cpuwinGetDefault(void);
-/// Whether the default window holds images (a framebuffer exists).
-bool cpuwinDefaultHasImages(void);
-/// Retires the default window's images and closes the window if it is open.
+/// The window of an NWindow with a VI2 layer: the default NWindow or one of
+/// nwindowCreateForDisplay. It opens on first use. NULL if it cannot open.
+CpuWindow* cpuwinGet(NWindow* nw);
+/// Whether an NWindow's window holds images (a framebuffer exists on it).
+bool cpuwinHasImages(NWindow* nw);
+/// Retires the images of an NWindow's window and closes that window if it is open.
 /// Returns false if the display still holds an image. Everything then stays open.
-bool cpuwinCloseDefault(void);
+bool cpuwinCloseFor(NWindow* nw);
