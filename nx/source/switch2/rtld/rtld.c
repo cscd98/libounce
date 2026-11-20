@@ -12,6 +12,9 @@
  *                      and _rtldRunConstructors.
  *   _rtldRunProgram    calls the program's main.
  *
+ * While the program runs, dlopen and dlclose (dlfcn.c) add and remove
+ * libraries.
+ *
  * libounce.so is linked so that its own references bind to itself. The
  * exceptions are the symbols that a program can replace (__libnx_initheap,
  * __appInit, __nx_heap_size and the like) and the ones only a program has
@@ -33,6 +36,7 @@
 #include "runtime/diag.h"
 #include "switch2/runtime/dynlink.h"
 #include "../../internal.h"
+#include "rtld.h"
 
 #define RTLD_HIDDEN __attribute__((visibility("hidden")))
 
@@ -48,8 +52,11 @@ extern int __system_argc;
 extern char** __system_argv;
 int main(int argc, char** argv);
 
-static DynlinkModule g_rtldModules[DYNLINK_MAX_MODULES];
-static DynlinkProgram g_rtldProgram;
+RtldModule g_rtldModules[DYNLINK_MAX_MODULES];
+DynlinkProgram g_rtldProgram;
+RMutex g_rtldLock;
+void* g_rtldMainTls;
+size_t g_rtldTlsUsed;
 
 // Applies libounce.so's relocations that need only its own address. The code
 // reads no global variable: the GOT is among the words that it fills in.
@@ -104,7 +111,7 @@ static void _rtldWriteMessage(const DynlinkLoadInfo* info, const char* text, con
 
 // Makes a module's relocated constant data read-only, as a statically linked
 // program's startup code does for its own (source/runtime/dynamic.c).
-static Result _rtldProtectModule(const DynlinkModule* m) {
+Result _rtldProtectModule(const DynlinkModule* m) {
     if (!m->relro || !m->relro_size)
         return 0;
 
@@ -129,7 +136,7 @@ RTLD_HIDDEN Result _rtldLinkProgram(const ConfigEntry* entries, uintptr_t own_ba
 
     dynlinkProgramCreate(&g_rtldProgram);
     for (u32 i = 0; i < info->module_count; i++) {
-        DynlinkModule* m = &g_rtldModules[i];
+        DynlinkModule* m = &g_rtldModules[i].module;
         Result rc = dynlinkModuleOpen(m, (const void*)info->modules[i].base, info->modules[i].size);
         if (R_SUCCEEDED(rc))
             rc = dynlinkProgramAddModule(&g_rtldProgram, m);
@@ -141,6 +148,8 @@ RTLD_HIDDEN Result _rtldLinkProgram(const ConfigEntry* entries, uintptr_t own_ba
     }
 
     dynlinkProgramLayoutTls(&g_rtldProgram);
+    g_rtldTlsUsed = g_rtldProgram.tls_size;
+    g_rtldProgram.tls_size += RTLD_TLS_SPARE;
     const char* symbol = NULL;
     Result rc = dynlinkProgramRelocate(&g_rtldProgram, &symbol);
     if (R_FAILED(rc)) {
@@ -172,12 +181,14 @@ size_t getTlsAreaAlign(void) {
 }
 
 void initializeTlsArea(void* area) {
+    rmutexLock(&g_rtldLock);
     memset(area, 0, g_rtldProgram.tls_size);
     for (u32 i = 0; i < g_rtldProgram.module_count; i++) {
         const DynlinkModule* m = g_rtldProgram.modules[i];
         if (m->tls_template_size)
             memcpy((u8*)area + m->tls_offset, m->tls_template, m->tls_template_size);
     }
+    rmutexUnlock(&g_rtldLock);
 }
 
 // Gives the main thread its TLS area, from the start of the heap, as
@@ -192,6 +203,7 @@ void _rtldSetupMainTls(void) {
         diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_OutOfMemory));
 
     fake_heap_start = area + size;
+    g_rtldMainTls = area;
     initializeTlsArea(area);
     getThreadVars()->tls_tp = area - g_rtldProgram.tls_start_offset;
 }
@@ -207,7 +219,9 @@ typedef struct {
 
 const void* _Unwind_Find_FDE(void* address, RtldUnwindBases* bases) {
     uintptr_t function = 0;
+    rmutexLock(&g_rtldLock);
     const void* entry = dynlinkProgramFindUnwindEntry(&g_rtldProgram, (uintptr_t)address, &function);
+    rmutexUnlock(&g_rtldLock);
     if (entry) {
         bases->text_base = NULL;
         bases->data_base = NULL;
@@ -217,7 +231,9 @@ const void* _Unwind_Find_FDE(void* address, RtldUnwindBases* bases) {
 }
 
 static void _rtldRunDestructors(void) {
+    rmutexLock(&g_rtldLock);
     dynlinkProgramRunDestructors(&g_rtldProgram);
+    rmutexUnlock(&g_rtldLock);
 }
 
 // Runs every module's constructors, and its destructors when the program exits.

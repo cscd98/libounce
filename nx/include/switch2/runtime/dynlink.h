@@ -86,6 +86,7 @@ typedef struct DynlinkModule {
     void* relro;                                ///< Data that is read-only after relocation, or NULL.
     size_t relro_size;                          ///< Its size.
     uintptr_t runtime_entry;                    ///< Entry of the runtime library; zero for every other module.
+    void* dso_handle;                           ///< The module's __dso_handle, which its C++ code gives __cxa_atexit, or NULL.
     bool is_self_relocated;                     ///< The module already applied its own base relocations (RELATIVE and RELR).
     bool is_relocated;                          ///< \ref dynlinkProgramRelocate finished this module.
     bool is_initialized;                        ///< Its constructors have run.
@@ -98,7 +99,7 @@ typedef struct DynlinkProgram {
     size_t tls_start_offset;                     ///< Distance from the thread pointer to the TLS area.
     size_t tls_size;                             ///< Size of the TLS area of all modules.
     size_t tls_align;                            ///< Its alignment.
-    u8 init_order[DYNLINK_MAX_MODULES];          ///< Private: module indices in the order their constructors ran.
+    DynlinkModule* init_order[DYNLINK_MAX_MODULES]; ///< Private: the modules in the order their constructors ran.
     u32 init_order_count;                        ///< Private.
 } DynlinkProgram;
 
@@ -130,6 +131,13 @@ void dynlinkProgramCreate(DynlinkProgram* p);
  */
 Result dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m);
 
+/**
+ * @brief Removes a module from the program.
+ * @param[in] p Program.
+ * @param[in] m Module, after \ref dynlinkProgramRunModuleDestructors. No other module may still use its symbols.
+ */
+void dynlinkProgramRemoveModule(DynlinkProgram* p, DynlinkModule* m);
+
 /// Finds the program's module with a DT_SONAME, or NULL.
 DynlinkModule* dynlinkProgramFindModule(const DynlinkProgram* p, const char* soname);
 
@@ -141,6 +149,17 @@ DynlinkModule* dynlinkProgramFindModule(const DynlinkProgram* p, const char* son
  * @return The symbol, or NULL.
  */
 const Elf64_Sym* dynlinkProgramFindSymbol(const DynlinkProgram* p, const char* name, const DynlinkModule** out_module);
+
+/**
+ * @brief Finds a symbol in a module, then in the libraries it needs, breadth-first.
+ * @param[in] p Program.
+ * @param[in] m Module of the program.
+ * @param[in] name Symbol name.
+ * @param[out] out_module The module that defines it. May be NULL.
+ * @return The symbol, or NULL.
+ */
+const Elf64_Sym* dynlinkProgramFindSymbolFrom(const DynlinkProgram* p, const DynlinkModule* m, const char* name,
+                                              const DynlinkModule** out_module);
 
 /**
  * @brief Gives every module its place in a thread's TLS area.
@@ -177,3 +196,6 @@ void dynlinkProgramRunConstructors(DynlinkProgram* p);
 
 /// Runs the destructors of every module, in the reverse order of their constructors.
 void dynlinkProgramRunDestructors(DynlinkProgram* p);
+
+/// Runs the destructors of one module whose constructors ran.
+void dynlinkProgramRunModuleDestructors(DynlinkProgram* p, DynlinkModule* m);

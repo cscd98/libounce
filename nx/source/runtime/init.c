@@ -244,6 +244,13 @@ void __attribute__((weak)) NX_NORETURN __libnx_exit(int rc)
     // Clean up services.
     __appExit();
 
+#ifdef LIBOUNCE_SHARED
+    // libounce.so: the libraries that the program loaded with dlopen and did
+    // not unload (switch2/rtld/dlfcn.c).
+    void _rtldUnmapLibraries(void);
+    _rtldUnmapLibraries();
+#endif
+
 #ifdef __SWITCH2__
     // A program that replaces __appExit does not close the GPU driver and the
     // window; do it before their services close below.

@@ -81,6 +81,12 @@ __nx_mod0:
     .word  __tls_align          - __nx_mod0
     .word  0x0
 
+    // The module's __dso_handle. When the module is unloaded, the runtime
+    // library runs what the module registered with it (__cxa_atexit).
+    .ascii "ODH0"
+    .word  __dso_handle         - __nx_mod0
+    .word  0x0
+
 // The platform word of the "OUN0" block: 2 is Switch 2 (NroPlatform).
 .global __ounce_platform
 .hidden __ounce_platform

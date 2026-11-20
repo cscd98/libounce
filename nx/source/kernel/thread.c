@@ -124,10 +124,29 @@ static void _EntryWrap(ThreadEntryArgs* args) {
     g_threadList = args->t;
     mutexUnlock(&g_threadMutex);
 
+#ifdef LIBOUNCE_SHARED
+    // threadCreate gave the area its initial values. A library that dlopen
+    // loaded between then and now is not among them, and dlopen did not find
+    // this thread in the list, so give the values again.
+    initializeTlsArea(args->tls);
+#endif
+
     // Launch thread entrypoint
     args->entry(args->arg);
     threadExit();
 }
+
+#ifdef LIBOUNCE_SHARED
+void _threadForEachTlsArea(void (*function)(void* area, void* argument), void* argument) {
+    mutexLock(&g_threadMutex);
+    for (Thread* t = g_threadList; t; t = t->next) {
+        // threadCreate puts the area after the stack and its entry arguments.
+        if (t != &g_mainThread)
+            function((u8*)t->stack_mirror + t->stack_sz + sizeof(ThreadEntryArgs), argument);
+    }
+    mutexUnlock(&g_threadMutex);
+}
+#endif
 
 void __libnx_init_thread(void) {
     g_mainThread.handle         = envGetMainThreadHandle();

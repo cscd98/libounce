@@ -38,6 +38,10 @@ size_t getTlsAreaSize(void);
 size_t getTlsAreaAlign(void);
 void initializeTlsArea(void* area);
 
+// Calls a function with the TLS area of each running thread that
+// threadCreate made (kernel/thread.c). The main thread is not one of them.
+void _threadForEachTlsArea(void (*function)(void* area, void* argument), void* argument);
+
 #else
 
 extern const u8 __tdata_lma[];
