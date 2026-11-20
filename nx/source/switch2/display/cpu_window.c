@@ -3,12 +3,20 @@
  *
  * Switch 1's framebuffer gives nvmap-registered CPU memory to a vi buffer
  * queue. On Switch 2, this window registers the same memory with the GSV
- * GPU worker and imports it as GSV display images. The default window's VI2
- * layer (nwindowGetVi2Layer) presents them. There is no GPU mapping and no
- * GPU work.
+ * GPU worker and imports it as GSV display images. The VI2 layer of the
+ * window's NWindow (nwindowGetVi2Layer) presents them. There is no GPU mapping
+ * and no GPU work.
+ *
+ * A process has one GPU session for these windows: the GSV sync and GPU
+ * objects, the worker with its slot event, the client and the address space.
+ * The windows share it, and it closes with the last of them. Each window has
+ * its own layer, backing and images: the default NWindow's, and one for each
+ * NWindow of nwindowCreateForDisplay that has a framebuffer.
  */
 #include <string.h>
 #include "cpu_window.h"
+#include "vi2_window.h"
+#include "kernel/mutex.h"
 #include "kernel/svc.h"
 #include "switch2/kernel/svc.h"
 #include "arm/counter.h"
@@ -52,7 +60,28 @@
 #define WAIT_LIMIT_NS  2000000000ull
 #define POLL_NS        1000000ull
 
+// The GPU session that the windows share.
+typedef struct {
+    u32 users;              // Open windows.
+    GsvSync sync;
+    GsvGpu gpu;
+    Event slot_event;
+    u8 client;
+    u32 as_fd;
+} CpuWindowSession;
+
+// Windows of NWindows other than the default one, as nwindowCreateForDisplay allows.
+#define CPUWIN_MAX_DISPLAY_WINDOWS 4
+
+static Mutex g_sessionMutex;        // The session's users.
+static CpuWindowSession g_session;
+static Mutex g_windowsMutex;        // The table of the display windows.
+// The worker signals one slot event for every window's backing. A release
+// clears it, asks and waits, one window at a time.
+static Mutex g_releaseMutex;
+
 static CpuWindow g_defaultWindow;
+static CpuWindow g_displayWindows[CPUWIN_MAX_DISPLAY_WINDOWS];
 
 static u32 _cpuwinPitch(u32 width) {
     return (width * 4 + GOB_WIDTH_B - 1) & ~(GOB_WIDTH_B - 1);
@@ -108,7 +137,7 @@ static Result _cpuwinWaitRelease(CpuWindow* w, const Vi2Dependency* d) {
     for (;;) {
         u64 counter = 0;
         u8 mode = 0;
-        Result rc = gsvSyncReadCounter(&w->sync, ~_cpuwinReleaseToken(d), &counter, &mode);
+        Result rc = gsvSyncReadCounter(&g_session.sync, ~_cpuwinReleaseToken(d), &counter, &mode);
         if (R_FAILED(rc))
             return rc;
         if (mode != 1)
@@ -143,39 +172,39 @@ static Result _cpuwinAcquireSlot(CpuWindow* w, u8* out_slot) {
 
 // GSV root, nvservices, sync and frame registration, then the GPU session,
 // its worker and a client.
-static Result _cpuwinOpenGpu(CpuWindow* w) {
+static Result _cpuwinOpenGpu(void) {
     Result rc = gsvInitialize();
     if (R_FAILED(rc))
         return rc;
     rc = nvInitialize();
     if (R_FAILED(rc))
         goto fail_gsv;
-    rc = gsvOpenSync(&w->sync);
+    rc = gsvOpenSync(&g_session.sync);
     if (R_FAILED(rc))
         goto fail_nv;
     rc = gsvRegisterFrame(FRAME_MODE, NULL);
     if (R_FAILED(rc))
         goto fail_sync;
-    rc = gsvOpenGpu(&w->gpu);
+    rc = gsvOpenGpu(&g_session.gpu);
     if (R_FAILED(rc))
         goto fail_sync;
-    rc = gsvGpuCreateSlotEvent(&w->gpu, WORKER_SLOT, &w->slot_event, false);
+    rc = gsvGpuCreateSlotEvent(&g_session.gpu, WORKER_SLOT, &g_session.slot_event, false);
     if (R_FAILED(rc))
         goto fail_gpu;
-    rc = gsvGpuOpenWorker(&w->gpu, WORKER_SLOT, &w->slot_event);
+    rc = gsvGpuOpenWorker(&g_session.gpu, WORKER_SLOT, &g_session.slot_event);
     if (R_FAILED(rc))
         goto fail_slot_event;
-    rc = gsvGpuRegisterClient(&w->gpu, CLIENT_NAME, &w->client);
+    rc = gsvGpuRegisterClient(&g_session.gpu, CLIENT_NAME, &g_session.client);
     if (R_FAILED(rc))
         goto fail_slot_event;
     return 0;
 
 fail_slot_event:
-    eventClose(&w->slot_event);
+    eventClose(&g_session.slot_event);
 fail_gpu:
-    gsvGpuClose(&w->gpu);
+    gsvGpuClose(&g_session.gpu);
 fail_sync:
-    gsvSyncClose(&w->sync);
+    gsvSyncClose(&g_session.sync);
 fail_nv:
     nvExit();
 fail_gsv:
@@ -183,31 +212,31 @@ fail_gsv:
     return rc;
 }
 
-static void _cpuwinCloseGpu(CpuWindow* w) {
-    gsvGpuReleaseClient(&w->gpu, w->client);
-    gsvSyncClose(&w->sync);
-    eventClose(&w->slot_event);
-    gsvGpuClose(&w->gpu);
+static void _cpuwinCloseGpu(void) {
+    gsvGpuReleaseClient(&g_session.gpu, g_session.client);
+    gsvSyncClose(&g_session.sync);
+    eventClose(&g_session.slot_event);
+    gsvGpuClose(&g_session.gpu);
     nvExit();
     gsvExit();
 }
 
 // A VM registered with the root and imported on nvhost-as-gpu. Without the
 // import, gsvRegisterImageMemory returns 0x280f3.
-static Result _cpuwinOpenAddressSpace(CpuWindow* w) {
+static Result _cpuwinOpenAddressSpace(void) {
     u32 vm_id = 0;
-    Result rc = gsvGpuCreateVm(&w->gpu, &vm_id);
+    Result rc = gsvGpuCreateVm(&g_session.gpu, &vm_id);
     GsvGpuVaRange user[4];
     u32 user_count = 0;
     if (R_SUCCEEDED(rc))
-        rc = gsvGpuGetVmUserRanges(&w->gpu, vm_id, user, &user_count);
+        rc = gsvGpuGetVmUserRanges(&g_session.gpu, vm_id, user, &user_count);
     GsvGpuVaRange gsv_range;
     if (R_SUCCEEDED(rc))
-        rc = gsvGpuGetVmGsvRange(&w->gpu, vm_id, &gsv_range);
+        rc = gsvGpuGetVmGsvRange(&g_session.gpu, vm_id, &gsv_range);
     if (R_SUCCEEDED(rc))
         rc = gsvRegisterVm(vm_id);
     if (R_SUCCEEDED(rc))
-        rc = nvOpen(&w->as_fd, "/dev/nvhost-as-gpu");
+        rc = nvOpen(&g_session.as_fd, "/dev/nvhost-as-gpu");
     if (R_FAILED(rc))
         return rc;
 
@@ -220,39 +249,60 @@ static Result _cpuwinOpenAddressSpace(CpuWindow* w) {
         u64 reserved2;
     } argument = { AS_IMPORT_VERSION, vm_id, 0, AS_USER_FIRST, AS_USER_END, 0 };
     _Static_assert(sizeof(argument) == 40, "AS import argument size");
-    rc = nvIoctl(w->as_fd, AS_IMPORT_IOCTL, &argument);
+    rc = nvIoctl(g_session.as_fd, AS_IMPORT_IOCTL, &argument);
     if (R_FAILED(rc))
-        nvClose(w->as_fd);
+        nvClose(g_session.as_fd);
     return rc;
 }
 
-Result cpuwinOpen(CpuWindow* w) {
+// Takes a user of the session, opening it for the first one.
+static Result _cpuwinAcquireSession(void) {
+    Result rc = 0;
+    mutexLock(&g_sessionMutex);
+    if (!g_session.users) {
+        rc = _cpuwinOpenGpu();
+        if (R_SUCCEEDED(rc)) {
+            rc = _cpuwinOpenAddressSpace();
+            if (R_FAILED(rc))
+                _cpuwinCloseGpu();
+        }
+    }
+    if (R_SUCCEEDED(rc))
+        g_session.users++;
+    mutexUnlock(&g_sessionMutex);
+    return rc;
+}
+
+static void _cpuwinReleaseSession(void) {
+    mutexLock(&g_sessionMutex);
+    if (--g_session.users == 0) {
+        nvClose(g_session.as_fd);
+        _cpuwinCloseGpu();
+        memset(&g_session, 0, sizeof(g_session));
+    }
+    mutexUnlock(&g_sessionMutex);
+}
+
+Result cpuwinOpen(CpuWindow* w, NWindow* nw) {
     memset(w, 0, sizeof(*w));
-    Result rc = _cpuwinOpenGpu(w);
+    Result rc = _cpuwinAcquireSession();
     if (R_FAILED(rc))
         return rc;
-    rc = _cpuwinOpenAddressSpace(w);
-    if (R_FAILED(rc))
-        goto fail_gpu;
-    // The default window owns the layer (default_window.c).
-    rc = nwindowGetVi2Layer(nwindowGetDefault(), &w->layer);
-    if (R_FAILED(rc))
-        goto fail_address_space;
+    // The NWindow owns the layer (default_window.c, vi2_window.c).
+    rc = nwindowGetVi2Layer(nw, &w->layer);
+    if (R_FAILED(rc)) {
+        _cpuwinReleaseSession();
+        return rc;
+    }
+    w->nw = nw;
     w->is_open = true;
     return 0;
-
-fail_address_space:
-    nvClose(w->as_fd);
-fail_gpu:
-    _cpuwinCloseGpu(w);
-    return rc;
 }
 
 void cpuwinClose(CpuWindow* w) {
     if (!w->is_open)
         return;
-    nvClose(w->as_fd);
-    _cpuwinCloseGpu(w);
+    _cpuwinReleaseSession();
     memset(w, 0, sizeof(*w));
 }
 
@@ -314,7 +364,7 @@ static Result _cpuwinRegisterBacking(CpuWindow* w) {
     Result rc = svcUnknown80(w->backing, w->backing_size, BACKING_PREPARE_BIT, BACKING_PREPARE_BIT);
     if (R_FAILED(rc))
         return rc;
-    rc = gsvGpuRegisterMemory(&w->gpu, (uintptr_t)w->backing, w->backing_size, w->client, &w->range_id);
+    rc = gsvGpuRegisterMemory(&g_session.gpu, (uintptr_t)w->backing, w->backing_size, g_session.client, &w->range_id);
     if (R_SUCCEEDED(rc) && !w->range_id)
         rc = MAKERESULT(Module_Libnx, LibnxError_BadInput);
     if (R_FAILED(rc))
@@ -325,9 +375,17 @@ static Result _cpuwinRegisterBacking(CpuWindow* w) {
 // The worker signals the slot event when it retires the range. Then this
 // function clears the SVC 0x80 attribute.
 static Result _cpuwinUnregisterBacking(CpuWindow* w) {
-    Result rc = gsvGpuUnregisterMemory(&w->gpu, w->range_id, WORKER_SLOT);
+    mutexLock(&g_releaseMutex);
+    // The event stays signalled after an earlier release. Clearing an event
+    // that is not signalled returns InvalidState.
+    Result rc = eventClear(&g_session.slot_event);
+    if (R_VALUE(rc) == KERNELRESULT(InvalidState))
+        rc = 0;
     if (R_SUCCEEDED(rc))
-        rc = eventWait(&w->slot_event, WAIT_LIMIT_NS);
+        rc = gsvGpuUnregisterMemory(&g_session.gpu, w->range_id, WORKER_SLOT);
+    if (R_SUCCEEDED(rc))
+        rc = eventWait(&g_session.slot_event, WAIT_LIMIT_NS);
+    mutexUnlock(&g_releaseMutex);
     if (R_SUCCEEDED(rc))
         rc = svcUnknown80(w->backing, w->backing_size, BACKING_PREPARE_BIT, 0);
     return rc;
@@ -421,7 +479,7 @@ Result cpuwinPresentImage(CpuWindow* w, u32 index) {
         return rc;
     Vi2PresentOptions options;
     vi2MakeBasicPresentOptions(&options, w->width, w->height, armGetSystemTick());
-    nwindowGetPresentInterval(nwindowGetDefault(), &options.interval_numerator,
+    nwindowGetPresentInterval(w->nw, &options.interval_numerator,
                               &options.interval_denominator);
     const Vi2Dependency producer = {0};
     u64 available = 0;
@@ -432,22 +490,61 @@ Result cpuwinPresentImage(CpuWindow* w, u32 index) {
     return rc;
 }
 
-CpuWindow* cpuwinGetDefault(void) {
-    if (!g_defaultWindow.is_open && R_FAILED(cpuwinOpen(&g_defaultWindow)))
+// The window of an NWindow of nwindowCreateForDisplay, or a free one for it
+// (is_open false), or NULL. Call with g_windowsMutex held.
+static CpuWindow* _cpuwinFindDisplayWindow(NWindow* nw) {
+    CpuWindow* free_window = NULL;
+    for (u32 i = 0; i < CPUWIN_MAX_DISPLAY_WINDOWS; i++) {
+        CpuWindow* w = &g_displayWindows[i];
+        if (w->is_open && w->nw == nw)
+            return w;
+        if (!w->is_open && !free_window)
+            free_window = w;
+    }
+    return free_window;
+}
+
+CpuWindow* cpuwinGet(NWindow* nw) {
+    if (nw == nwindowGetDefault()) {
+        if (!g_defaultWindow.is_open && R_FAILED(cpuwinOpen(&g_defaultWindow, nw)))
+            return NULL;
+        return &g_defaultWindow;
+    }
+    if (!_nwindowGetDisplayWindow(nw))
         return NULL;
-    return &g_defaultWindow;
+
+    mutexLock(&g_windowsMutex);
+    CpuWindow* w = _cpuwinFindDisplayWindow(nw);
+    if (w && !w->is_open && R_FAILED(cpuwinOpen(w, nw)))
+        w = NULL;
+    mutexUnlock(&g_windowsMutex);
+    return w;
 }
 
-bool cpuwinDefaultHasImages(void) {
-    return g_defaultWindow.num_images != 0;
+bool cpuwinHasImages(NWindow* nw) {
+    if (nw == nwindowGetDefault())
+        return g_defaultWindow.num_images != 0;
+    mutexLock(&g_windowsMutex);
+    CpuWindow* w = _cpuwinFindDisplayWindow(nw);
+    const bool has_images = w && w->is_open && w->nw == nw && w->num_images != 0;
+    mutexUnlock(&g_windowsMutex);
+    return has_images;
 }
 
-// Retires a framebuffer left open at exit first. If the display still holds
-// an image, everything stays open. Freeing memory that the display reads is
+// Retires a framebuffer left open first. If the display still holds an
+// image, everything stays open. Freeing memory that the display reads is
 // worse than leaking the window.
-bool cpuwinCloseDefault(void) {
-    if (R_FAILED(cpuwinDestroyImages(&g_defaultWindow)))
+bool cpuwinCloseFor(NWindow* nw) {
+    CpuWindow* w = &g_defaultWindow;
+    if (nw != nwindowGetDefault()) {
+        mutexLock(&g_windowsMutex);
+        w = _cpuwinFindDisplayWindow(nw);
+        mutexUnlock(&g_windowsMutex);
+        if (!w || !w->is_open || w->nw != nw)
+            return true;
+    }
+    if (R_FAILED(cpuwinDestroyImages(w)))
         return false;
-    cpuwinClose(&g_defaultWindow);
+    cpuwinClose(w);
     return true;
 }

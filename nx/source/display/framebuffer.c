@@ -96,15 +96,16 @@ static const NvColorFormat g_nvColorFmtTable[] = {
 #endif
 
 #if defined(__SWITCH2__)
-// Only the default window. Its display layer opens here on first
-// use, with GSV images registered from this CPU memory. See cpu_window.c.
+// The default window or a window of nwindowCreateForDisplay. The default
+// window's display layer opens here on first use. GSV images are registered
+// from this CPU memory. See cpu_window.c.
 Result framebufferCreate(Framebuffer* fb, NWindow *win, u32 width, u32 height, u32 format, u32 num_fbs)
 {
     const u32 bytes_per_pixel = _framebufferBytesPerPixel(format);
-    if (!fb || win != nwindowGetDefault() || !width || !height || !bytes_per_pixel || num_fbs < 1 || num_fbs > CPUWIN_MAX_IMAGES)
+    if (!fb || !nwindowIsValid(win) || !width || !height || !bytes_per_pixel || num_fbs < 1 || num_fbs > CPUWIN_MAX_IMAGES)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
 
-    CpuWindow* cw = cpuwinGetDefault();
+    CpuWindow* cw = cpuwinGet(win);
     if (!cw)
         return MAKERESULT(Module_Libnx, LibnxError_BadGfxInit);
     if (cw->num_images)
@@ -258,10 +259,12 @@ Result framebufferMakeLinear(Framebuffer* fb)
 #if defined(__SWITCH2__)
 // Waits for the display to release every image before freeing it.
 // If that fails the images stay registered and their memory is not freed.
-// Then it releases the window's GPU sessions and VI2 layer, as libnx's
-// framebufferClose ends its nv sessions. They hold the process's GSV root,
-// which delegates nvservices only once: a GPU user that opens after the
-// framebuffer, such as a Vulkan device, needs a new root.
+// Then it releases the window's part of the GPU session, and for the default
+// window its VI2 layer, as libnx's framebufferClose ends its nv sessions.
+// They hold the process's GSV root, which delegates nvservices only once: a
+// GPU user that opens after the framebuffer, such as a Vulkan device, needs a
+// new root. A window of nwindowCreateForDisplay keeps its layer until
+// nwindowClose.
 void framebufferClose(Framebuffer* fb)
 {
     if (!fb || !fb->has_init)
@@ -270,15 +273,21 @@ void framebufferClose(Framebuffer* fb)
     if (fb->buf_linear)
         __libnx_free(fb->buf_linear);
 
+    NWindow* win = fb->win;
+    CpuWindow* cw = cpuwinGet(win);
     bool images_released = false;
-    if (fb->buf && R_SUCCEEDED(cpuwinDestroyImages(cpuwinGetDefault()))) {
+    if (fb->buf && cw && R_SUCCEEDED(cpuwinDestroyImages(cw))) {
         __libnx_free(fb->buf);
         images_released = true;
     }
 
     memset(fb, 0, sizeof(*fb));
-    if (images_released)
-        nwindowReleaseVi2Layer(nwindowGetDefault());
+    if (!images_released)
+        return;
+    if (win == nwindowGetDefault())
+        nwindowReleaseVi2Layer(win);
+    else
+        cpuwinCloseFor(win);
 }
 #else
 void framebufferClose(Framebuffer* fb)
@@ -311,7 +320,7 @@ void* framebufferBegin(Framebuffer* fb, u32* out_stride)
         return NULL;
 
     const s32 slot = (fb->win->cur_slot + 1) % (s32)fb->num_fbs;
-    Result rc = cpuwinWaitImage(cpuwinGetDefault(), slot);
+    Result rc = cpuwinWaitImage(cpuwinGet(fb->win), slot);
     if (R_FAILED(rc))
         diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_BadGfxDequeueBuffer));
     fb->win->cur_slot = slot;
@@ -401,7 +410,7 @@ void framebufferEnd(Framebuffer* fb)
     _framebufferConvertToImage(image, fb->buf_linear, fb->stride, fb->win->width, fb->win->height, fb->win->format);
     armDCacheFlush(image, fb->fb_size);
 
-    Result rc = cpuwinPresentImage(cpuwinGetDefault(), fb->win->cur_slot);
+    Result rc = cpuwinPresentImage(cpuwinGet(fb->win), fb->win->cur_slot);
     if (R_FAILED(rc))
         diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_BadGfxQueueBuffer));
 }

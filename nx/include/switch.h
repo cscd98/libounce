@@ -97,6 +97,8 @@ extern "C" {
 #include "switch2/memory/heap.h"
 #include "switch2/services/audu.h"
 #include "switch2/services/nmouse.h"
+#include "switch2/services/stpl.h"
+#include "switch2/runtime/gameshare.h"
 #endif
 #include "switch/services/nv.h"
 #include "switch/services/nifm.h"
