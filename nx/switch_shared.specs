@@ -1,0 +1,9 @@
+*link:
++ -T %:getenv(DEVKITPRO /libounce/switch.ld) %{!shared:-pie --no-dynamic-linker -z nodynamic-undefined-weak --entry=0} --gc-sections -z text -z now -z pack-relative-relocs --build-id=sha1 --hash-style=gnu -L%:getenv(DEVKITPRO /libounce/lib/shared)
+
+*startfile:
+%:getenv(DEVKITPRO /libounce/lib/ounce_module_crt0.o) %{!shared:--require-defined=main}
+
+*endfile:
+
+
