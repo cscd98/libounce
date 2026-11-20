@@ -124,7 +124,7 @@ export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 all: switch2
 
 switch2:
-	@$(MAKE) SWITCH2=1 lib/libounce.a lib/libounced.a
+	@$(MAKE) SWITCH2=1 lib/libounce.a lib/libounced.a lib/ounce_module_crt0.o
 
 switch1: lib/libnx.a lib/libnxd.a
 
@@ -150,7 +150,8 @@ install-switch2: switch2
 		'#ifndef __SWITCH2__' '#define __SWITCH2__ 1' '#endif' > $(DESTDIR)$(DEVKITPRO)/libounce/include/switch/target.h
 	@cp -rv external/bsd/include $(DESTDIR)$(DEVKITPRO)/libounce/
 	@cp -v lib/libounce.a lib/libounced.a lib/libounce_core.a lib/libounce_cored.a \
-		lib/libounce_malloc.a lib/libounce_mallocd.a $(DESTDIR)$(DEVKITPRO)/libounce/lib/
+		lib/libounce_malloc.a lib/libounce_mallocd.a lib/ounce_module_crt0.o \
+		$(DESTDIR)$(DEVKITPRO)/libounce/lib/
 	@echo 'INPUT(libounce.a)' > $(DESTDIR)$(DEVKITPRO)/libounce/lib/libnx.a
 	@echo 'INPUT(libounced.a)' > $(DESTDIR)$(DEVKITPRO)/libounce/lib/libnxd.a
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/cmake/Platform $(DESTDIR)$(DEVKITPRO)/portlibs/switch2/bin
@@ -237,6 +238,12 @@ define merge_ounce
 	@$(AR) s $(1).tmp
 	@mv $(1).tmp $(1)
 endef
+
+# The start of a dynamically linked module's image (source/switch2/module):
+# the object that is linked first in every shared library and every
+# dynamically linked program. It is not part of libounce.a.
+lib/ounce_module_crt0.o : source/switch2/module/module_crt0.s | lib
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 lib/libounce.a : lib/libounce_core.a | lib
 	@$(MAKE) --no-print-directory SWITCH2=1 MALLOC=1 lib/libounce_malloc.a

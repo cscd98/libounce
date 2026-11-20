@@ -94,6 +94,22 @@ __nx_mod0:
     .word  __ounce_platform // NroPlatform, defined by nro_ounce.c for the build
     .word  0x1              // version of this record
 
+    // Thread-local storage, as a dynamically linked module records it
+    // (switch2/module/module_crt0.s): an NRO has no program headers to say
+    // where it is. The blocks give the initial bytes, the main thread's block
+    // (for its size), and the word that holds the alignment.
+    .ascii "OTL0"
+    .word  __tdata_lma     - __nx_mod0
+    .word  __tdata_lma_end - __nx_mod0
+
+    .ascii "OTL1"
+    .word  __tls_start     - __nx_mod0
+    .word  __tls_end       - __nx_mod0
+
+    .ascii "OTL2"
+    .word  __tls_align     - __nx_mod0
+    .word  0x0
+
 .section .bss.__stack_top, "aw", %nobits
 .global __stack_top
 .align 3
