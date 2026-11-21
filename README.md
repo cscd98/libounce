@@ -49,6 +49,34 @@ source $DEVKITPRO/switch2vars.sh
 aarch64-none-elf-cmake -S . -B build && cmake --build build
 ```
 
+## Dynamic modules
+
+For Make, define `TARGET` (ending in `.elf`), `OBJECTS` and your compile
+flags, then include `$(DEVKITPRO)/libounce/libounce-module.mk` before your
+rules. Link with `$(LDFLAGS)` and `$(LIBS)`; the helper adds the `.nro`
+target.
+
+For CMake, configure with
+`-DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/libounce/cmake/Switch2Module.cmake`.
+Create a `SHARED` library target, include
+`$ENV{DEVKITPRO}/libounce/libounce-module.cmake`, then call
+`libounce_add_module(target)`. This toolchain is for modules only;
+applications continue to use `Switch2.cmake`.
+
+Hosts use `moduleLoad`, `moduleGetFunction`, `moduleClose` and
+`moduleGetError` from `<switch2/runtime/module.h>`. Link hosts with
+`--export-dynamic,--hash-style=sysv` and explicitly retain the runtime
+symbols and libraries their modules need. The host chooses this export
+policy. `ModuleLoadOptions.required_symbol` optionally checks an entry
+point before constructors run; `trace_path` optionally enables a log.
+
+The loader supports host imports, constructors, C++ finalizers and
+traditional AArch64 TLS. It does not resolve dependencies between modules
+or support C++ exception unwinding across module boundaries. Loading and
+closing perform file/service I/O and belong outside frame callbacks.
+Stop module execution before closing; live TLS or a failed unmap retains
+the mapping and its backing storage.
+
 ## License
 
 libnx and libounce: ISC (`LICENSE` and `LICENSES/`). mimalloc

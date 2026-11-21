@@ -124,7 +124,7 @@ export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 all: switch2
 
 switch2:
-	@$(MAKE) SWITCH2=1 lib/libounce.a lib/libounced.a
+	@$(MAKE) SWITCH2=1 lib/libounce.a lib/libounced.a lib/module-start.o lib/libounce_module.a
 
 switch1: lib/libnx.a lib/libnxd.a
 
@@ -140,8 +140,10 @@ install-switch1: lib/libnx.a lib/libnxd.a
 # files lib/libnx.a and lib/libnxd.a are linker scripts that select libounce,
 # so a Makefile that links -lnx links libounce.
 install-switch2: switch2
+	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/module
+	@cp -v module/module-tls.ld $(DESTDIR)$(DEVKITPRO)/libounce/module/
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/lib
-	@cp -v default_icon.jpg switch_rules switch2_rules switch2_cpu.mk switch.ld $(DESTDIR)$(DEVKITPRO)/libounce/
+	@cp -v default_icon.jpg switch_rules switch2_rules switch2_cpu.mk switch.ld libounce-module.mk libounce-module.cmake $(DESTDIR)$(DEVKITPRO)/libounce/
 	@sed 's|/libnx/switch.ld|/libounce/switch.ld|' switch.specs > $(DESTDIR)$(DEVKITPRO)/libounce/switch.specs
 	@cp -rv include $(DESTDIR)$(DEVKITPRO)/libounce/
 	@printf '%s\n' '/**' ' * @file target.h' ' * @brief The platform that these headers are installed for: Switch 2.' \
@@ -149,13 +151,13 @@ install-switch2: switch2
 		' * is built for Switch 2 whatever its compiler flags.' ' */' '#pragma once' '' \
 		'#ifndef __SWITCH2__' '#define __SWITCH2__ 1' '#endif' > $(DESTDIR)$(DEVKITPRO)/libounce/include/switch/target.h
 	@cp -rv external/bsd/include $(DESTDIR)$(DEVKITPRO)/libounce/
-	@cp -v lib/libounce.a lib/libounced.a lib/libounce_core.a lib/libounce_cored.a \
+	@cp -v lib/module-start.o lib/libounce_module.a lib/libounce.a lib/libounced.a lib/libounce_core.a lib/libounce_cored.a \
 		lib/libounce_malloc.a lib/libounce_mallocd.a $(DESTDIR)$(DEVKITPRO)/libounce/lib/
 	@echo 'INPUT(libounce.a)' > $(DESTDIR)$(DEVKITPRO)/libounce/lib/libnx.a
 	@echo 'INPUT(libounced.a)' > $(DESTDIR)$(DEVKITPRO)/libounce/lib/libnxd.a
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/cmake/Platform $(DESTDIR)$(DEVKITPRO)/portlibs/switch2/bin
 	@cp -v ../toolchain/switch2vars.sh $(DESTDIR)$(DEVKITPRO)/
-	@cp -v ../toolchain/cmake/Switch2.cmake $(DESTDIR)$(DEVKITPRO)/libounce/cmake/
+	@cp -v ../toolchain/cmake/Switch2.cmake ../toolchain/cmake/Switch2Module.cmake $(DESTDIR)$(DEVKITPRO)/libounce/cmake/
 	@cp -v ../toolchain/cmake/Platform/NintendoSwitch.cmake $(DESTDIR)$(DEVKITPRO)/libounce/cmake/Platform/
 	@cp -v ../toolchain/aarch64-none-elf-cmake $(DESTDIR)$(DEVKITPRO)/portlibs/switch2/bin/
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/licenses
@@ -291,6 +293,17 @@ lib/libounce_malloc_initd.a : lib debug-switch2-malloc-init $(SOURCES) $(INCLUDE
 	DEPSDIR=$(CURDIR)/debug-switch2-malloc-init \
 	--no-print-directory -C debug-switch2-malloc-init \
 	-f $(CURDIR)/Makefile
+
+MODULE_FLAGS := $(SWITCH2_CPU) -mtp=soft -fPIC -mtls-dialect=trad -ftls-model=global-dynamic -DLIBOUNCE_MODULE_TLS -D__SWITCH__ -D__SWITCH2__ -Iinclude -Iexternal/bsd/include
+
+lib/module-start.o: module/start.S | lib
+	$(CC) $(MODULE_FLAGS) -c $< -o $@
+
+lib/module-runtime.o: module/runtime.c | lib
+	$(CC) $(MODULE_FLAGS) -std=gnu11 -O2 -Wall -Werror -c $< -o $@
+
+lib/libounce_module.a: lib/module-runtime.o
+	$(AR) rcs $@ $<
 
 #---------------------------------------------------------------------------------
 clean:
