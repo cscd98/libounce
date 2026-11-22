@@ -11,8 +11,11 @@
  *       sdmc:/kaihen/lib. A name with a slash is a path and is opened as it is.
  * @note Every loaded library is in the global scope: its symbols are found by RTLD_DEFAULT and
  *       by libraries that are loaded later. \ref RTLD_LOCAL is accepted and has no effect.
- * @note A library's thread-local variables take room that each thread keeps for libraries
- *       loaded this way (4 KiB). \ref dlopen fails when it is used up.
+ * @note Build a library that has large thread-local variables with -ftls-model=global-dynamic
+ *       -mtls-dialect=trad: each thread then gets the library's block when it first uses it.
+ *       The thread-local variables of a library built with -ftls-model=initial-exec take room
+ *       that each thread keeps for libraries loaded this way (4 KiB), and \ref dlopen fails
+ *       when it is used up.
  */
 #pragma once
 

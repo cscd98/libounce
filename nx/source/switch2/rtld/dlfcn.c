@@ -11,9 +11,12 @@
  * loaded library that needs it; it is unloaded when the last one goes. The
  * modules that the loader mapped stay for the life of the program.
  *
- * A thread's TLS area has a fixed size, so a library's thread-local
- * variables go in the spare room at its end (RTLD_TLS_SPARE). Their code
- * reads them as the code of every other module does.
+ * A thread's TLS area has a fixed size. A library whose code reads its
+ * thread-local variables at fixed offsets (the initial-exec model) gets its
+ * block in the spare room at the area's end (RTLD_TLS_SPARE), and fails to
+ * load when that is used up. A library of the general-dynamic model calls
+ * __tls_get_addr (tls_dynamic.c), which allocates a thread's block when the
+ * thread first uses it: such a library has no limit.
  */
 #include <dlfcn.h>
 #include <stdio.h>
@@ -33,7 +36,7 @@ extern int __system_argc;
 extern char** __system_argv;
 void __cxa_finalize(void* dso_handle);
 
-static __thread char g_dlError[160];
+static __thread char g_dlError[192];
 static __thread bool g_dlHasError;
 static bool g_dlRoInitialized;
 
@@ -176,7 +179,8 @@ static void _dlRelease(RtldModule* library) {
 
     // The room of its thread-local variables is free again when it is the
     // last in the area.
-    if (library->module.tls_size && library->module.tls_offset + library->module.tls_size == g_rtldTlsUsed)
+    if (library->module.is_tls_static && library->module.tls_size &&
+        library->module.tls_offset + library->module.tls_size == g_rtldTlsUsed)
         g_rtldTlsUsed = library->module.tls_offset;
 
     dynlinkProgramRemoveModule(&g_rtldProgram, &library->module);
@@ -221,11 +225,14 @@ typedef struct {
     u32 count;
 } DlNewModules;
 
-// Gives one thread's area the initial values of the new modules' thread-local variables.
+// Gives one thread's area the initial values of the thread-local variables
+// of the new modules that have their block there.
 static void _dlInitializeTls(void* area, void* argument) {
     const DlNewModules* added = argument;
     for (u32 i = 0; i < added->count; i++) {
         const DynlinkModule* m = added->modules[i];
+        if (!m->is_tls_static)
+            continue;
         memset((u8*)area + m->tls_offset, 0, m->tls_size);
         memcpy((u8*)area + m->tls_offset, m->tls_template, m->tls_template_size);
     }
@@ -240,16 +247,19 @@ static bool _dlLink(void) {
         if (m->is_relocated)
             continue;
         added.modules[added.count++] = m;
-        if (!m->tls_size)
+        // Only initial-exec code needs the block in the TLS area.
+        if (!m->tls_size || !m->needs_static_tls)
             continue;
 
         const size_t align = m->tls_align ? m->tls_align : 1;
         const size_t offset = (g_rtldTlsUsed + align - 1) & ~(align - 1);
         if (align > g_rtldProgram.tls_align || offset + m->tls_size > g_rtldProgram.tls_size) {
-            _dlSetError("no room is left for the thread-local variables of", m->soname);
+            _dlSetError("its thread-local variables do not fit; build it with "
+                        "-ftls-model=global-dynamic -mtls-dialect=trad", m->soname);
             return false;
         }
         m->tls_offset = offset;
+        m->is_tls_static = true;
         g_rtldTlsUsed = offset + m->tls_size;
     }
 

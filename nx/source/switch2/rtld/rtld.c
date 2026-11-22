@@ -184,8 +184,9 @@ void initializeTlsArea(void* area) {
     rmutexLock(&g_rtldLock);
     memset(area, 0, g_rtldProgram.tls_size);
     for (u32 i = 0; i < g_rtldProgram.module_count; i++) {
+        // Not a library whose blocks are allocated apart (tls_dynamic.c).
         const DynlinkModule* m = g_rtldProgram.modules[i];
-        if (m->tls_template_size)
+        if (m->is_tls_static && m->tls_template_size)
             memcpy((u8*)area + m->tls_offset, m->tls_template, m->tls_template_size);
     }
     rmutexUnlock(&g_rtldLock);

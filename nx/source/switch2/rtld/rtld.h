@@ -7,8 +7,9 @@
 #include "switch2/runtime/dynlink.h"
 
 // The room in each thread's TLS area, after the blocks of the modules that
-// the loader mapped, for the thread-local variables of libraries that dlopen
-// loads.
+// the loader mapped, for the thread-local variables of libraries with
+// initial-exec code that dlopen loads. A library of the general-dynamic
+// model does not use it (tls_dynamic.c).
 #define RTLD_TLS_SPARE 0x1000
 
 // A module and what the runtime linker keeps for it.

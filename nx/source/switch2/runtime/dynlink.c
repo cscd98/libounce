@@ -19,7 +19,10 @@
  * it out: the thread pointer, then tls_start_offset bytes (the larger of 16
  * and the program's TLS alignment), then the program's block, then each
  * library's block at its alignment. A TLS_TPREL relocation gets the distance
- * from the thread pointer to its variable.
+ * from the thread pointer to its variable. Code of the general-dynamic model
+ * passes __tls_get_addr two words of its GOT instead: the module's tls_id
+ * (TLS_DTPMOD) and the variable's offset in the module's block (TLS_DTPREL).
+ * The block of such a module need not be in the area.
  *
  * Unwinding reads a module's .eh_frame_hdr section, which MOD0 locates: a
  * table of every function's first address and unwind entry, sorted by
@@ -206,6 +209,10 @@ Result dynlinkModuleOpen(DynlinkModule* m, const void* image, size_t size) {
     m->relr_count = relr_size / sizeof(Elf64_Relr);
     m->init_count = init_size / sizeof(void*);
     m->fini_count = fini_size / sizeof(void*);
+    for (size_t i = 0; i < m->rela_count && !m->needs_static_tls; i++)
+        m->needs_static_tls = ELF64_R_TYPE(m->rela[i].r_info) == R_AARCH64_TLS_TPREL;
+    for (size_t i = 0; i < m->jmprel_count && !m->needs_static_tls; i++)
+        m->needs_static_tls = ELF64_R_TYPE(m->jmprel[i].r_info) == R_AARCH64_TLS_TPREL;
     // The SysV table's chain count is the symbol count.
     m->symbol_count = m->sysv_hash ? m->sysv_hash[1] : _dynlinkGnuSymbolCount(m->gnu_hash);
 
@@ -315,6 +322,7 @@ Result dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m) {
     if (p->module_count == DYNLINK_MAX_MODULES)
         return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
     p->modules[p->module_count++] = m;
+    m->tls_id = ++p->last_tls_id;
     return 0;
 }
 
@@ -396,6 +404,7 @@ void dynlinkProgramLayoutTls(DynlinkProgram* p) {
         DynlinkModule* m = p->modules[i];
         const size_t align = m->tls_align ? m->tls_align : 1;
         m->tls_offset = _dynlinkAlignUp(p->tls_size, align);
+        m->is_tls_static = true;
         p->tls_size = m->tls_offset + m->tls_size;
         if (align > p->tls_align)
             p->tls_align = align;
@@ -469,13 +478,24 @@ static Result _dynlinkApplyRela(const DynlinkProgram* p, const DynlinkModule* m,
                 break;
 
             case R_AARCH64_TLS_TPREL: {
-                // An undefined weak thread-local variable has no address to give.
-                if (!definition.module)
+                // An undefined weak thread-local variable has no address to
+                // give, and a block outside the TLS area has no fixed offset.
+                if (!definition.module || !definition.module->is_tls_static)
                     return MAKERESULT(Module_Libnx, LibnxError_BadReloc);
                 const u64 value = definition.symbol ? definition.symbol->st_value : 0;
                 *target = p->tls_start_offset + definition.module->tls_offset + value + rela->r_addend;
                 break;
             }
+
+            case R_AARCH64_TLS_DTPMOD:
+                if (!definition.module)
+                    return MAKERESULT(Module_Libnx, LibnxError_BadReloc);
+                *target = definition.module->tls_id;
+                break;
+
+            case R_AARCH64_TLS_DTPREL:
+                *target = (definition.symbol ? definition.symbol->st_value : 0) + rela->r_addend;
+                break;
 
             // TLS descriptors, copy relocations and indirect functions are
             // not supported: see dynlink.h.

@@ -11,9 +11,15 @@
  *       memory. Loading the files and mapping them is the loader's work: it maps the
  *       program and every library it needs, and enters the runtime library (libounce.so)
  *       with a \ref DynlinkLoadInfo. The runtime library links the modules and calls main.
- * @note Thread-local variables of load-time modules use the initial-exec model
- *       (-ftls-model=initial-exec). TLS descriptors are refused: the compiler generates
- *       wrong code for them with -mtp=soft.
+ * @note A module's thread-local variables use one of two models. With the initial-exec model
+ *       (-ftls-model=initial-exec) the module's block is in every thread's TLS area and its
+ *       code reads a variable at a fixed offset from the thread pointer: this is the model of
+ *       the modules that are loaded with the program. With the general-dynamic model in its
+ *       traditional form (-ftls-model=global-dynamic -mtls-dialect=trad) the code calls
+ *       __tls_get_addr, and the block can be anywhere: a library that is loaded later with
+ *       dlopen can then have thread-local variables of any size. TLS descriptors, the
+ *       compiler's default form of that model, are refused: the compiler generates wrong code
+ *       for them with -mtp=soft.
  */
 #pragma once
 #if !defined(__SWITCH2__)
@@ -80,7 +86,10 @@ typedef struct DynlinkModule {
     size_t tls_template_size;                   ///< Their size.
     size_t tls_size;                            ///< Size of the module's thread-local block.
     size_t tls_align;                           ///< Its alignment.
-    size_t tls_offset;                          ///< Offset of the block in a thread's TLS area, set by \ref dynlinkProgramLayoutTls.
+    size_t tls_offset;                          ///< Offset of the block in a thread's TLS area, when it is there.
+    u64 tls_id;                                 ///< What __tls_get_addr gets for the module's block. \ref dynlinkProgramAddModule sets it; no two modules of a program ever have the same.
+    bool needs_static_tls;                      ///< The module has initial-exec code: its block must be in every thread's TLS area.
+    bool is_tls_static;                         ///< The block is in every thread's TLS area, at tls_offset. \ref dynlinkProgramLayoutTls sets it.
     const void* eh_frame_hdr;                   ///< Index of the unwind entries (.eh_frame_hdr), or NULL.
     size_t eh_frame_hdr_size;                   ///< Its size.
     void* relro;                                ///< Data that is read-only after relocation, or NULL.
@@ -101,6 +110,7 @@ typedef struct DynlinkProgram {
     size_t tls_align;                            ///< Its alignment.
     DynlinkModule* init_order[DYNLINK_MAX_MODULES]; ///< Private: the modules in the order their constructors ran.
     u32 init_order_count;                        ///< Private.
+    u64 last_tls_id;                             ///< Private: the tls_id of the module that was added last.
 } DynlinkProgram;
 
 /**
@@ -173,7 +183,8 @@ void dynlinkProgramLayoutTls(DynlinkProgram* p);
  * @param[in] p Program, after \ref dynlinkProgramLayoutTls.
  * @param[out] out_symbol Name of the symbol that had no definition, on LibnxError_NotFound. May be NULL.
  * @return LibnxError_NotFound for an undefined symbol that is not weak, LibnxError_BadReloc for a
- *         relocation type that is not supported.
+ *         relocation type that is not supported, or for initial-exec code that reads a variable of
+ *         a module whose block is not in the TLS area.
  */
 Result dynlinkProgramRelocate(DynlinkProgram* p, const char** out_symbol);
 
