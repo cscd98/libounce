@@ -138,7 +138,7 @@ export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 			-I. \
 			-iquote $(CURDIR)/include/switch/
 
-.PHONY: clean all switch1 switch2 shared lib/shared/names install-shared install install-switch1 install-switch2 dist-src lib/libnx.a lib/libnxd.a lib/libounce.a lib/libounced.a \
+.PHONY: clean all switch1 switch2 shared shared-abi-update shared-abi-force lib/shared/names install-shared install install-switch1 install-switch2 dist-src lib/libnx.a lib/libnxd.a lib/libounce.a lib/libounced.a \
 	lib/libounce_core.a lib/libounce_cored.a lib/libounce_malloc.a lib/libounce_mallocd.a lib/libounce_shared.a
 
 #---------------------------------------------------------------------------------
@@ -155,6 +155,12 @@ switch2:
 shared:
 	@$(MAKE) SWITCH2=1 SHARED=1 lib/shared/nro/libounce.so.1 lib/shared/nro/libstdc++.so.6 \
 		lib/shared/names lib/ounce_module_crt0.o
+
+# Writes libounce.abi, the list of the symbols that libounce.so exports, from
+# the library as it is now. make shared fails when the two differ, so that a
+# change of the ABI is a change of that file.
+shared-abi-update:
+	@$(MAKE) SWITCH2=1 SHARED=1 SHARED_ABI_UPDATE=--update release-switch2-shared/libounce.exports
 
 # Installs libounce.so beside the static library. A program links it with
 # -specs=$(DEVKITPRO)/libounce/switch_shared.specs.
@@ -376,12 +382,37 @@ $(SHARED_BUILD)/newlib.txt : lib/libounce_shared.a ../toolchain/newlib-for-share
 		--first $< --provided $(shell $(CC) $(ARCH) -print-libgcc-file-name) --allow main \
 		$(foreach lib,$(SHARED_NEWLIB),$(shell $(CC) $(ARCH) -print-file-name=$(lib)))
 
+# The symbols that libounce.so exports: what a public header declares, the
+# hooks, and what the toolchain's libraries need from libounce; all of newlib
+# (../toolchain/libounce-exports.py). libounce.abi records libounce's part,
+# and the rule fails when the library's exports are not that list. The extra
+# names are ones that compiled code refers to and no header declares:
+# __tls_get_addr for general-dynamic thread-local variables, and devkitPro's
+# __system_argc and __system_argv.
+SHARED_EXTRA_EXPORTS	:=	__tls_get_addr __system_argc __system_argv
+SHARED_ABI_UPDATE	?=
+
+# An update of the list runs the rule even when its output is new.
+shared-abi-force:
+
+$(SHARED_BUILD)/libounce.exports : lib/libounce_shared.a $(SHARED_BUILD)/newlib.txt ../toolchain/libounce-exports.py $(wildcard libounce.abi) $(if $(SHARED_ABI_UPDATE),shared-abi-force)
+	python3 ../toolchain/libounce-exports.py --nm $(NM) --cc $(CC) --flag=-D__SWITCH__ --flag=-D__SWITCH2__ \
+		--library lib/libounce_shared.a \
+		$(foreach lib,$(SHARED_NEWLIB),--newlib $(SHARED_BUILD)/newlib/$(lib)) \
+		--toolchain $(shell $(CXX) $(ARCH) -print-file-name=libstdc++.a) \
+		--toolchain $(shell $(CC) $(ARCH) -print-libgcc-file-name) \
+		--include include --include include/switch --include external/bsd/include \
+		--system-include $(DEVKITPRO)/devkitA64/aarch64-none-elf/include \
+		$(foreach symbol,$(SHARED_EXTRA_EXPORTS),--extra $(symbol)) \
+		--abi libounce.abi --version-script $@ $(SHARED_ABI_UPDATE)
+
 # The link is kept only when main is the one symbol that libounce.so needs
 # from a program: with another, the library would not load.
-lib/shared/libounce.so.1 : lib/libounce_shared.a $(SHARED_BUILD)/libounce.hooks $(SHARED_BUILD)/newlib.txt switch.ld | lib/shared
+lib/shared/libounce.so.1 : lib/libounce_shared.a $(SHARED_BUILD)/libounce.hooks $(SHARED_BUILD)/libounce.exports $(SHARED_BUILD)/newlib.txt switch.ld | lib/shared
 	$(CC) $(ARCH) -shared -nostdlib -nostartfiles -Wl,-T,switch.ld -Wl,-soname,libounce.so.1 \
 		-Wl,-z,text -Wl,-z,now -Wl,-z,pack-relative-relocs -Wl,--build-id=sha1 -Wl,--hash-style=gnu \
 		-Wl,--eh-frame-hdr -Wl,--dynamic-list=$(SHARED_BUILD)/libounce.hooks \
+		-Wl,--version-script=$(SHARED_BUILD)/libounce.exports \
 		-Wl,--whole-archive lib/libounce_shared.a \
 		$(foreach lib,$(SHARED_NEWLIB),$(SHARED_BUILD)/newlib/$(lib)) -Wl,--no-whole-archive \
 		-lgcc -Wl,-Map,$(SHARED_BUILD)/libounce.map -o $(SHARED_BUILD)/libounce.so.1
