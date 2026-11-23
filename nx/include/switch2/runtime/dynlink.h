@@ -10,7 +10,13 @@
  *       breadth-first. A module's references are looked up in the program's global scope,
  *       then in the module and the libraries it needs. The global scope is the program,
  *       the libraries loaded with it, and the libraries that were added as global; a
- *       library that was added as local is seen only by the modules that need it. These functions parse and relocate images that are already in
+ *       library that was added as local is seen only by the modules that need it.
+ * @note A loader can put libraries between the program and the libraries it needs, as
+ *       Linux does with LD_PRELOAD. A definition in such a library is found before the one
+ *       in a library after it, so it takes its place for every module that looks the name
+ *       up, and it reaches the one it replaced with \ref dynlinkProgramFindSymbolAfter.
+ *       A library's references to its own symbols are replaced only when the library was
+ *       not linked to bind them to itself. These functions parse and relocate images that are already in
  *       memory. Loading the files and mapping them is the loader's work: it maps the
  *       program and every library it needs, and enters the runtime library (libounce.so)
  *       with a \ref DynlinkLoadInfo. The runtime library links the modules and calls main.
@@ -201,6 +207,20 @@ DynlinkModule* dynlinkProgramFindModule(const DynlinkProgram* p, const char* son
 const Elf64_Sym* dynlinkProgramFindSymbol(const DynlinkProgram* p, const char* name, const DynlinkModule** out_module);
 
 /**
+ * @brief Finds the next definition of a symbol in the global scope, after one module.
+ * @param[in] p Program.
+ * @param[in] m Module of the program. The modules after it in lookup order are searched.
+ * @param[in] name Symbol name.
+ * @param[out] out_module The module that defines it. May be NULL.
+ * @return The symbol, or NULL.
+ */
+const Elf64_Sym* dynlinkProgramFindSymbolAfter(const DynlinkProgram* p, const DynlinkModule* m, const char* name,
+                                               const DynlinkModule** out_module);
+
+/// Finds the program's module whose image contains an address, or NULL.
+DynlinkModule* dynlinkProgramFindModuleByAddress(const DynlinkProgram* p, uintptr_t address);
+
+/**
  * @brief Finds a symbol in a module, then in the libraries it needs, breadth-first.
  * @param[in] p Program.
  * @param[in] m Module of the program.
@@ -242,6 +262,8 @@ const void* dynlinkProgramFindUnwindEntry(const DynlinkProgram* p, uintptr_t add
 /**
  * @brief Runs the constructors of every module, each after the libraries it needs.
  * @param[in] p Program, relocated.
+ * @note The program's own run last: a library that the program does not need, such as one
+ *       that the loader added, is ready before any code of the program runs.
  */
 void dynlinkProgramRunConstructors(DynlinkProgram* p);
 

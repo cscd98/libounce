@@ -325,10 +325,17 @@ void* dlsym(void* handle, const char* name) {
     const DynlinkModule* owner = NULL;
     const Elf64_Sym* symbol = NULL;
     // The program's handle is the global scope too.
-    if (handle == RTLD_DEFAULT || handle == g_rtldProgram.first)
+    if (handle == RTLD_DEFAULT || handle == g_rtldProgram.first) {
         symbol = dynlinkProgramFindSymbol(&g_rtldProgram, name, &owner);
-    else if (_dlIsHandle(handle))
+    } else if (handle == RTLD_NEXT) {
+        // The module that called dlsym is the one that has the return address.
+        const uintptr_t caller = (uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0));
+        const DynlinkModule* m = dynlinkProgramFindModuleByAddress(&g_rtldProgram, caller);
+        if (m)
+            symbol = dynlinkProgramFindSymbolAfter(&g_rtldProgram, m, name, &owner);
+    } else if (_dlIsHandle(handle)) {
         symbol = dynlinkProgramFindSymbolFrom(&g_rtldProgram, handle, name, &owner);
+    }
 
     void* address = NULL;
     if (!symbol)

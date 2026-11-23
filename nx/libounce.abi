@@ -1256,7 +1256,9 @@ dynlinkModuleOpenInImage
 dynlinkProgramAddModule
 dynlinkProgramCreate
 dynlinkProgramFindModule
+dynlinkProgramFindModuleByAddress
 dynlinkProgramFindSymbol
+dynlinkProgramFindSymbolAfter
 dynlinkProgramFindSymbolFrom
 dynlinkProgramFindUnwindEntry
 dynlinkProgramLayoutTls

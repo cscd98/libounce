@@ -422,6 +422,27 @@ const Elf64_Sym* dynlinkProgramFindSymbol(const DynlinkProgram* p, const char* n
     return NULL;
 }
 
+const Elf64_Sym* dynlinkProgramFindSymbolAfter(const DynlinkProgram* p, const DynlinkModule* m, const char* name,
+                                               const DynlinkModule** out_module) {
+    NX_IGNORE_ARG(p);
+    for (const DynlinkModule* current = m->next; current; current = current->next) {
+        const Elf64_Sym* symbol = current->is_global ? dynlinkModuleFindSymbol(current, name) : NULL;
+        if (symbol) {
+            if (out_module) *out_module = current;
+            return symbol;
+        }
+    }
+    return NULL;
+}
+
+DynlinkModule* dynlinkProgramFindModuleByAddress(const DynlinkProgram* p, uintptr_t address) {
+    for (DynlinkModule* m = p->first; m; m = m->next) {
+        if (address >= m->base && address - m->base < m->size)
+            return m;
+    }
+    return NULL;
+}
+
 // Chains a module and the libraries it needs, each one time: the module,
 // then what it needs, then what those need. The chain starts at the module
 // and goes through search_next; it lasts until the next call. A module that
@@ -735,9 +756,7 @@ static u64 _dynlinkUnwindEntryRange(const u8* entry) {
 }
 
 const void* dynlinkProgramFindUnwindEntry(const DynlinkProgram* p, uintptr_t address, uintptr_t* out_function) {
-    const DynlinkModule* m = p->first;
-    while (m && !(address >= m->base && address - m->base < m->size))
-        m = m->next;
+    const DynlinkModule* m = dynlinkProgramFindModuleByAddress(p, address);
     if (!m || m->eh_frame_hdr_size < EH_HDR_TABLE_OFFSET)
         return NULL;
 
@@ -799,8 +818,12 @@ static void _dynlinkInitialize(DynlinkProgram* p, DynlinkModule* m) {
 }
 
 void dynlinkProgramRunConstructors(DynlinkProgram* p) {
-    for (DynlinkModule* m = p->first; m; m = m->next)
+    if (!p->first)
+        return;
+    // The libraries first, also those that the program does not need.
+    for (DynlinkModule* m = p->first->next; m; m = m->next)
         _dynlinkInitialize(p, m);
+    _dynlinkInitialize(p, p->first);
 }
 
 static void _dynlinkFinalize(DynlinkModule* m) {

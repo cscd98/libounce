@@ -39,6 +39,10 @@ extern "C" {
 /// A handle for \ref dlsym: the global scope, in the order its modules were loaded.
 #define RTLD_DEFAULT ((void*)0)
 
+/// A handle for \ref dlsym: the global scope after the module that calls dlsym. A library
+/// that defines a function in place of a later library's gets the one it replaced this way.
+#define RTLD_NEXT    ((void*)-1)
+
 /**
  * @brief Loads a shared library, with the libraries it needs, and runs their constructors.
  * @param[in] name File name or path of the library. NULL gives a handle for the program, which is the global scope.
@@ -52,7 +56,7 @@ void* dlopen(const char* name, int flags);
 /**
  * @brief Finds a symbol by its name.
  * @param[in] handle A handle from \ref dlopen, to search that library and then the libraries it
- *                   needs, or \ref RTLD_DEFAULT.
+ *                   needs, or \ref RTLD_DEFAULT, or \ref RTLD_NEXT.
  * @param[in] name Symbol name.
  * @return The symbol's address, or NULL: \ref dlerror then gives the reason.
  */
