@@ -19,9 +19,11 @@
  * points; the space, DYNLINK_MODULE_RECORD_SIZE, is larger than that record.
  *
  * Addresses in the dynamic section and the symbol table are relative to the
- * image's first byte. A program's lookup order is its module order: the
- * first module that defines a name gives every module that name, so a
- * program's definition takes the place of a library's.
+ * image's first byte. A reference is looked up in the global scope, in
+ * module order, so a program's definition takes the place of a library's;
+ * then in the module that has the reference and the libraries it needs.
+ * Two libraries that are added as local, such as plugins, therefore do not
+ * see each other's symbols.
  *
  * Thread-local storage follows AArch64's variant 1 as libounce's threads lay
  * it out: the thread pointer, then tls_start_offset bytes (the larger of 16
@@ -370,7 +372,8 @@ void dynlinkProgramCreate(DynlinkProgram* p) {
     memset(p, 0, sizeof(*p));
 }
 
-void dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m) {
+void dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m, bool is_global) {
+    m->is_global = is_global;
     m->next = NULL;
     if (p->last)
         p->last->next = m;
@@ -410,7 +413,7 @@ DynlinkModule* dynlinkProgramFindModule(const DynlinkProgram* p, const char* son
 
 const Elf64_Sym* dynlinkProgramFindSymbol(const DynlinkProgram* p, const char* name, const DynlinkModule** out_module) {
     for (const DynlinkModule* m = p->first; m; m = m->next) {
-        const Elf64_Sym* symbol = dynlinkModuleFindSymbol(m, name);
+        const Elf64_Sym* symbol = m->is_global ? dynlinkModuleFindSymbol(m, name) : NULL;
         if (symbol) {
             if (out_module) *out_module = m;
             return symbol;
@@ -419,23 +422,17 @@ const Elf64_Sym* dynlinkProgramFindSymbol(const DynlinkProgram* p, const char* n
     return NULL;
 }
 
-const Elf64_Sym* dynlinkProgramFindSymbolFrom(DynlinkProgram* p, DynlinkModule* m, const char* name,
-                                              const DynlinkModule** out_module) {
-    // The modules to search, each one time: the module, then what it needs,
-    // then what those need. They are a queue through search_next, and a
-    // module that this search has reached carries the search's number.
+// Chains a module and the libraries it needs, each one time: the module,
+// then what it needs, then what those need. The chain starts at the module
+// and goes through search_next; it lasts until the next call. A module that
+// this search has reached carries the search's number.
+static void _dynlinkQueueDependencies(DynlinkProgram* p, DynlinkModule* m) {
     const u64 mark = ++p->search_mark;
     DynlinkModule* queue_last = m;
     m->search_mark = mark;
     m->search_next = NULL;
 
     for (DynlinkModule* current = m; current; current = current->search_next) {
-        const Elf64_Sym* symbol = dynlinkModuleFindSymbol(current, name);
-        if (symbol) {
-            if (out_module) *out_module = current;
-            return symbol;
-        }
-
         for (u32 i = 0; i < current->needed_count; i++) {
             DynlinkModule* needed = dynlinkProgramFindModule(p, dynlinkModuleGetNeeded(current, i));
             if (!needed || needed->search_mark == mark)
@@ -446,7 +443,30 @@ const Elf64_Sym* dynlinkProgramFindSymbolFrom(DynlinkProgram* p, DynlinkModule* 
             queue_last = needed;
         }
     }
+}
+
+// Finds a symbol in the chain that _dynlinkQueueDependencies made for a module.
+static const Elf64_Sym* _dynlinkFindInQueue(const DynlinkModule* m, const char* name, const DynlinkModule** out_module) {
+    for (const DynlinkModule* current = m; current; current = current->search_next) {
+        const Elf64_Sym* symbol = dynlinkModuleFindSymbol(current, name);
+        if (symbol) {
+            if (out_module) *out_module = current;
+            return symbol;
+        }
+    }
     return NULL;
+}
+
+const Elf64_Sym* dynlinkProgramFindSymbolFrom(DynlinkProgram* p, DynlinkModule* m, const char* name,
+                                              const DynlinkModule** out_module) {
+    _dynlinkQueueDependencies(p, m);
+    return _dynlinkFindInQueue(m, name, out_module);
+}
+
+void dynlinkProgramMakeGlobal(DynlinkProgram* p, DynlinkModule* m) {
+    _dynlinkQueueDependencies(p, m);
+    for (DynlinkModule* current = m; current; current = current->search_next)
+        current->is_global = true;
 }
 
 static size_t _dynlinkAlignUp(size_t value, size_t align) {
@@ -483,7 +503,9 @@ typedef struct {
 } DynlinkDefinition;
 
 // A reference binds inside its own module when the symbol is local or not
-// visible to others; every other reference takes the program's first definition.
+// visible to others. Every other reference takes the first definition in
+// the global scope, and without one, the first in the module's own chain of
+// dependencies, which dynlinkProgramRelocate made.
 static bool _dynlinkResolve(const DynlinkProgram* p, const DynlinkModule* m, u32 symbol_index,
                             DynlinkDefinition* out, const char** out_name) {
     const Elf64_Sym* reference = &m->symtab[symbol_index];
@@ -500,6 +522,12 @@ static bool _dynlinkResolve(const DynlinkProgram* p, const DynlinkModule* m, u32
     out->symbol = dynlinkProgramFindSymbol(p, name, &out->module);
     if (out->symbol)
         return true;
+    // A module of the global scope has all it needs there.
+    if (!m->is_global) {
+        out->symbol = _dynlinkFindInQueue(m, name, &out->module);
+        if (out->symbol)
+            return true;
+    }
     if (ELF64_ST_BIND(reference->st_info) == STB_WEAK) {
         out->module = NULL;
         return true;
@@ -595,6 +623,8 @@ Result dynlinkProgramRelocate(DynlinkProgram* p, const char** out_symbol) {
         if (m->is_relocated)
             continue;
 
+        if (!m->is_global)
+            _dynlinkQueueDependencies(p, m);
         if (!m->is_self_relocated)
             _dynlinkApplyRelr(m);
         rc = _dynlinkApplyRela(p, m, m->rela, m->rela_count, &missing);

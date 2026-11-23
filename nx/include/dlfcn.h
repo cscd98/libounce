@@ -7,10 +7,14 @@
  * @note Only a dynamically linked program has these functions: they are in libounce.so, the
  *       runtime library that linked the program (see switch2/runtime/dynlink.h). A statically
  *       linked program that calls them does not link.
- * @note A library is found by its file name in the program's directory, then in
- *       sdmc:/kaihen/lib. A name with a slash is a path and is opened as it is.
- * @note Every loaded library is in the global scope: its symbols are found by RTLD_DEFAULT and
- *       by libraries that are loaded later. \ref RTLD_LOCAL is accepted and has no effect.
+ * @note A library is found by its file name in the directories where the loader looked for the
+ *       program's own libraries. A name with a slash is a path and is opened as it is.
+ * @note A library's references are looked up in the global scope, then in the library and the
+ *       libraries it needs. The global scope is the program, the libraries loaded with it, and
+ *       the libraries loaded with \ref RTLD_GLOBAL. A library loaded without that flag is
+ *       local: no other library sees its symbols, so two plugins that define the same names each
+ *       use their own. A name that the global scope also defines still binds there; link a
+ *       plugin with -Wl,-Bsymbolic to make its references to its own symbols bind to itself.
  * @note Build a library that has large thread-local variables with -ftls-model=global-dynamic
  *       -mtls-dialect=trad: each thread then gets the library's block when it first uses it.
  *       The thread-local variables of a library built with -ftls-model=initial-exec take room
@@ -27,17 +31,17 @@ extern "C" {
 #define RTLD_LAZY   0x001
 /// Resolve all symbols when the library is loaded. This is always done.
 #define RTLD_NOW    0x002
-/// Accepted for compatibility. See the note on the global scope.
+/// The library's symbols are not available to other libraries. This is the default.
 #define RTLD_LOCAL  0x000
-/// The library's symbols are available to libraries that are loaded later. This is always so.
+/// The library and the libraries it needs join the global scope.
 #define RTLD_GLOBAL 0x100
 
-/// A handle for \ref dlsym: the program and all loaded libraries, in the order they were loaded.
+/// A handle for \ref dlsym: the global scope, in the order its modules were loaded.
 #define RTLD_DEFAULT ((void*)0)
 
 /**
  * @brief Loads a shared library, with the libraries it needs, and runs their constructors.
- * @param[in] name File name or path of the library. NULL gives a handle for the program itself.
+ * @param[in] name File name or path of the library. NULL gives a handle for the program, which is the global scope.
  * @param[in] flags RTLD_* flags.
  * @return A handle for \ref dlsym and \ref dlclose, or NULL: \ref dlerror then gives the reason.
  * @note A library that is already loaded is not loaded again. Each successful call needs one

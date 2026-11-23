@@ -7,7 +7,10 @@
  * @note A module is an NRO image with a MOD0 header and an ELF dynamic section: the
  *       program, or a shared library that it names with DT_NEEDED. A \ref DynlinkProgram
  *       holds the modules in lookup order: the program first, then its libraries
- *       breadth-first. These functions parse and relocate images that are already in
+ *       breadth-first. A module's references are looked up in the program's global scope,
+ *       then in the module and the libraries it needs. The global scope is the program,
+ *       the libraries loaded with it, and the libraries that were added as global; a
+ *       library that was added as local is seen only by the modules that need it. These functions parse and relocate images that are already in
  *       memory. Loading the files and mapping them is the loader's work: it maps the
  *       program and every library it needs, and enters the runtime library (libounce.so)
  *       with a \ref DynlinkLoadInfo. The runtime library links the modules and calls main.
@@ -54,6 +57,8 @@ typedef struct DynlinkLoadInfo {
     u32 module_count;                           ///< Their number.
     u32 message_size;                           ///< Size of the message buffer.
     char* message;                              ///< When linking fails, the runtime library writes the reason here.
+    const char* const* library_directories;     ///< The directories where the loader looked for the program's libraries, in order, as paths that fopen takes. dlopen looks in the same ones.
+    u32 library_directory_count;                ///< Their number.
 } DynlinkLoadInfo;
 
 /// One module: a parsed NRO image. A module of a program is in a list, and its record is
@@ -97,6 +102,7 @@ typedef struct DynlinkModule {
     bool is_self_relocated;                     ///< The module already applied its own base relocations (RELATIVE and RELR).
     bool is_relocated;                          ///< \ref dynlinkProgramRelocate finished this module.
     bool is_initialized;                        ///< Its constructors have run.
+    bool is_global;                             ///< It is in the program's global scope.
     void* owner_data;                           ///< For the code that loaded the module. The linker does not use it.
     struct DynlinkModule* next;                 ///< The next module of its program in lookup order, or NULL.
     struct DynlinkModule* initialized_before;   ///< Private: the module whose constructors ran before this one's.
@@ -162,8 +168,18 @@ void dynlinkProgramCreate(DynlinkProgram* p);
  * @brief Adds a module at the end of the program's lookup order.
  * @param[in] p Program.
  * @param[in] m Module. The program keeps the pointer.
+ * @param[in] is_global Whether the module is in the global scope: true for the program and the
+ *                      libraries that are loaded with it.
  */
-void dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m);
+void dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m, bool is_global);
+
+/**
+ * @brief Puts a module and the libraries it needs in the global scope.
+ * @param[in] p Program.
+ * @param[in] m Module of the program.
+ * @note References that are already relocated keep what they were bound to.
+ */
+void dynlinkProgramMakeGlobal(DynlinkProgram* p, DynlinkModule* m);
 
 /**
  * @brief Removes a module from the program.
@@ -176,7 +192,7 @@ void dynlinkProgramRemoveModule(DynlinkProgram* p, DynlinkModule* m);
 DynlinkModule* dynlinkProgramFindModule(const DynlinkProgram* p, const char* soname);
 
 /**
- * @brief Finds the first definition of a symbol in the program's lookup order.
+ * @brief Finds the first definition of a symbol in the program's global scope.
  * @param[in] p Program.
  * @param[in] name Symbol name.
  * @param[out] out_module The module that defines it. May be NULL.

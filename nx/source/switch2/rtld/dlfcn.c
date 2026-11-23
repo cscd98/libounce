@@ -11,6 +11,11 @@
  * loaded library that needs it; it is unloaded when the last one goes. The
  * modules that the loader mapped stay for the life of the program.
  *
+ * A library is local unless RTLD_GLOBAL asks otherwise: its references are
+ * looked up in the global scope and then in the library and what it needs,
+ * and no other library sees its symbols. Two plugins that define the same
+ * names therefore each use their own.
+ *
  * A thread's TLS area has a fixed size. A library whose code reads its
  * thread-local variables at fixed offsets (the initial-exec model) gets its
  * block in the spare room at the area's end (RTLD_TLS_SPARE), and fails to
@@ -29,11 +34,8 @@
 #include "rtld.h"
 
 #define PAGE_SIZE               0x1000
-#define DL_LIBRARY_DIRECTORY    "sdmc:/kaihen/lib"
 #define DL_PATH_SIZE            0x301
 
-extern int __system_argc;
-extern char** __system_argv;
 void __cxa_finalize(void* dso_handle);
 
 static __thread char g_dlError[192];
@@ -53,24 +55,20 @@ static bool _dlIsHandle(const void* handle) {
     return false;
 }
 
-// Opens a library's file: a path as it is, a file name in the program's
-// directory and then in the library directory.
+// Opens a library's file: a path as it is, a file name in each of the
+// directories where the loader looked for the program's libraries.
 static FILE* _dlOpenFile(const char* name) {
     if (strchr(name, '/'))
         return fopen(name, "rb");
 
-    char path[DL_PATH_SIZE];
-    const char* program = __system_argc > 0 ? __system_argv[0] : NULL;
-    const char* program_name = program ? strrchr(program, '/') : NULL;
-    if (program_name) {
-        const int length = snprintf(path, sizeof(path), "%.*s/%s", (int)(program_name - program), program, name);
+    for (u32 i = 0; i < g_rtldLibraryDirectoryCount; i++) {
+        char path[DL_PATH_SIZE];
+        const int length = snprintf(path, sizeof(path), "%s/%s", g_rtldLibraryDirectories[i], name);
         FILE* file = length > 0 && (size_t)length < sizeof(path) ? fopen(path, "rb") : NULL;
         if (file)
             return file;
     }
-
-    const int length = snprintf(path, sizeof(path), "%s/%s", DL_LIBRARY_DIRECTORY, name);
-    return length > 0 && (size_t)length < sizeof(path) ? fopen(path, "rb") : NULL;
+    return NULL;
 }
 
 // Reads a library's file into new page-aligned memory, with its BSS after it.
@@ -152,7 +150,7 @@ static DynlinkModule* _dlLoad(const char* name, const char* soname) {
     library->memory = memory;
     library->references = 1;
     m->owner_data = library;
-    dynlinkProgramAddModule(&g_rtldProgram, m);
+    dynlinkProgramAddModule(&g_rtldProgram, m, false);
     return m;
 }
 
@@ -299,7 +297,6 @@ static bool _dlLink(void) {
 }
 
 void* dlopen(const char* name, int flags) {
-    NX_IGNORE_ARG(flags);
     rmutexLock(&g_rtldLock);
 
     DynlinkModule* m;
@@ -308,6 +305,10 @@ void* dlopen(const char* name, int flags) {
     } else {
         bool failed = false;
         m = _dlAcquire(name, &failed);
+        // A library that joins the global scope takes the libraries it needs
+        // with it, also when they were loaded as local before.
+        if (m && !failed && (flags & RTLD_GLOBAL))
+            dynlinkProgramMakeGlobal(&g_rtldProgram, m);
         if (m && (failed || !_dlLink())) {
             _dlRelease(m);
             m = NULL;
@@ -323,7 +324,8 @@ void* dlsym(void* handle, const char* name) {
 
     const DynlinkModule* owner = NULL;
     const Elf64_Sym* symbol = NULL;
-    if (handle == RTLD_DEFAULT)
+    // The program's handle is the global scope too.
+    if (handle == RTLD_DEFAULT || handle == g_rtldProgram.first)
         symbol = dynlinkProgramFindSymbol(&g_rtldProgram, name, &owner);
     else if (_dlIsHandle(handle))
         symbol = dynlinkProgramFindSymbolFrom(&g_rtldProgram, handle, name, &owner);

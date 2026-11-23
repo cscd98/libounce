@@ -54,6 +54,8 @@ int main(int argc, char** argv);
 
 DynlinkProgram g_rtldProgram;
 RMutex g_rtldLock;
+const char* const* g_rtldLibraryDirectories;
+u32 g_rtldLibraryDirectoryCount;
 void* g_rtldMainTls;
 size_t g_rtldTlsUsed;
 
@@ -141,9 +143,12 @@ RTLD_HIDDEN Result _rtldLinkProgram(const ConfigEntry* entries, uintptr_t own_ba
             _rtldWriteMessage(info, "a module is not a dynamically linked NRO that was built for this libounce", NULL);
             return rc;
         }
-        dynlinkProgramAddModule(&g_rtldProgram, m);
+        dynlinkProgramAddModule(&g_rtldProgram, m, true);
         m->is_self_relocated = m->base == own_base;
     }
+
+    g_rtldLibraryDirectories = info->library_directories;
+    g_rtldLibraryDirectoryCount = info->library_directory_count;
 
     dynlinkProgramLayoutTls(&g_rtldProgram);
     g_rtldTlsUsed = g_rtldProgram.tls_size;

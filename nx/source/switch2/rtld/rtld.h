@@ -29,6 +29,10 @@ extern DynlinkProgram g_rtldProgram;
 // through a constructor takes it again on the same thread.
 extern RMutex g_rtldLock;
 
+// The directories where a library is looked for by its name, from the loader.
+extern const char* const* g_rtldLibraryDirectories;
+extern u32 g_rtldLibraryDirectoryCount;
+
 // The main thread's TLS area, and the end of the last block in every area.
 extern void* g_rtldMainTls;
 extern size_t g_rtldTlsUsed;
