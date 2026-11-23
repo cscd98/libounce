@@ -48,7 +48,7 @@ __nx_mod0:
     .word  __bss_end__          - __nx_mod0
     .word  __eh_frame_hdr_start - __nx_mod0
     .word  __eh_frame_hdr_end   - __nx_mod0
-    .word  0
+    .word  __ounce_module_record - __nx_mod0
 
     // The same blocks as a program's MOD0 (source/runtime/switch_crt0.s).
     .ascii "LNY0"
@@ -87,6 +87,11 @@ __nx_mod0:
     .word  __dso_handle         - __nx_mod0
     .word  0x0
 
+    // The size of the space that MOD0's last word locates.
+    .ascii "OMR0"
+    .word  0x200
+    .word  0x0
+
 // The platform word of the "OUN0" block: 2 is Switch 2 (NroPlatform).
 .global __ounce_platform
 .hidden __ounce_platform
@@ -101,3 +106,13 @@ __nx_mod0:
 .align 3
 __dso_handle:
     .quad __dso_handle
+
+// The space for the module's record: the linker keeps what it knows about
+// the module here (DynlinkModule, DYNLINK_MODULE_RECORD_SIZE bytes), so it
+// needs no table of modules.
+.section .bss.__ounce_module_record, "aw", %nobits
+.global __ounce_module_record
+.hidden __ounce_module_record
+.align 4
+__ounce_module_record:
+    .space 0x200

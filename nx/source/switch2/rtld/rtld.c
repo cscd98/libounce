@@ -52,7 +52,6 @@ extern int __system_argc;
 extern char** __system_argv;
 int main(int argc, char** argv);
 
-RtldModule g_rtldModules[DYNLINK_MAX_MODULES];
 DynlinkProgram g_rtldProgram;
 RMutex g_rtldLock;
 void* g_rtldMainTls;
@@ -129,21 +128,20 @@ RTLD_HIDDEN Result _rtldLinkProgram(const ConfigEntry* entries, uintptr_t own_ba
         if (entry->Key == DYNLINK_CONFIG_ENTRY_KEY)
             info = (const DynlinkLoadInfo*)entry->Value[0];
     }
-    if (!info || !info->module_count || info->module_count > DYNLINK_MAX_MODULES) {
+    if (!info || !info->module_count) {
         _rtldWriteMessage(info, "the loader gave no usable module list", NULL);
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     }
 
     dynlinkProgramCreate(&g_rtldProgram);
     for (u32 i = 0; i < info->module_count; i++) {
-        DynlinkModule* m = &g_rtldModules[i].module;
-        Result rc = dynlinkModuleOpen(m, (const void*)info->modules[i].base, info->modules[i].size);
-        if (R_SUCCEEDED(rc))
-            rc = dynlinkProgramAddModule(&g_rtldProgram, m);
+        DynlinkModule* m = NULL;
+        const Result rc = dynlinkModuleOpenInImage((void*)info->modules[i].base, info->modules[i].size, &m);
         if (R_FAILED(rc)) {
-            _rtldWriteMessage(info, "a module is not a dynamically linked NRO", NULL);
+            _rtldWriteMessage(info, "a module is not a dynamically linked NRO that was built for this libounce", NULL);
             return rc;
         }
+        dynlinkProgramAddModule(&g_rtldProgram, m);
         m->is_self_relocated = m->base == own_base;
     }
 
@@ -161,8 +159,8 @@ RTLD_HIDDEN Result _rtldLinkProgram(const ConfigEntry* entries, uintptr_t own_ba
         return rc;
     }
 
-    for (u32 i = 0; i < g_rtldProgram.module_count && R_SUCCEEDED(rc); i++)
-        rc = _rtldProtectModule(g_rtldProgram.modules[i]);
+    for (const DynlinkModule* m = g_rtldProgram.first; m && R_SUCCEEDED(rc); m = m->next)
+        rc = _rtldProtectModule(m);
     if (R_FAILED(rc))
         _rtldWriteMessage(info, "a module's read-only data could not be protected", NULL);
     return rc;
@@ -183,9 +181,8 @@ size_t getTlsAreaAlign(void) {
 void initializeTlsArea(void* area) {
     rmutexLock(&g_rtldLock);
     memset(area, 0, g_rtldProgram.tls_size);
-    for (u32 i = 0; i < g_rtldProgram.module_count; i++) {
+    for (const DynlinkModule* m = g_rtldProgram.first; m; m = m->next) {
         // Not a library whose blocks are allocated apart (tls_dynamic.c).
-        const DynlinkModule* m = g_rtldProgram.modules[i];
         if (m->is_tls_static && m->tls_template_size)
             memcpy((u8*)area + m->tls_offset, m->tls_template, m->tls_template_size);
     }

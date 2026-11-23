@@ -30,11 +30,9 @@
 #include "../../switch/types.h"
 #include "../../switch/result.h"
 
-/// Most modules of one program, with the program itself.
-#define DYNLINK_MAX_MODULES 32
-
-/// Most libraries that one module names with DT_NEEDED.
-#define DYNLINK_MAX_NEEDED 16
+/// Size of the space that a module reserves in its own image for its \ref DynlinkModule.
+/// MOD0's module object field locates it, and the "OMR0" block after MOD0 gives its size.
+#define DYNLINK_MODULE_RECORD_SIZE 0x200
 
 /// Key of the loader's configuration entry for a dynamically linked program ("OMOD").
 /// Value[0] is the address of a \ref DynlinkLoadInfo.
@@ -58,7 +56,8 @@ typedef struct DynlinkLoadInfo {
     char* message;                              ///< When linking fails, the runtime library writes the reason here.
 } DynlinkLoadInfo;
 
-/// One module: a parsed NRO image.
+/// One module: a parsed NRO image. A module of a program is in a list, and its record is
+/// in the module's own image, so that a program has no fixed number of modules.
 typedef struct DynlinkModule {
     uintptr_t base;                             ///< Address of the image's first byte.
     size_t size;                                ///< Size of the image with its BSS.
@@ -80,8 +79,7 @@ typedef struct DynlinkModule {
     size_t init_count;                          ///< Their number.
     void (**fini_array)(void);                  ///< Destructors.
     size_t fini_count;                          ///< Their number.
-    const char* needed[DYNLINK_MAX_NEEDED];     ///< DT_NEEDED names.
-    u32 needed_count;                           ///< Their number.
+    u32 needed_count;                           ///< Number of libraries it names with DT_NEEDED; see \ref dynlinkModuleGetNeeded.
     const void* tls_template;                   ///< Initial bytes of the module's thread-local data.
     size_t tls_template_size;                   ///< Their size.
     size_t tls_size;                            ///< Size of the module's thread-local block.
@@ -99,18 +97,26 @@ typedef struct DynlinkModule {
     bool is_self_relocated;                     ///< The module already applied its own base relocations (RELATIVE and RELR).
     bool is_relocated;                          ///< \ref dynlinkProgramRelocate finished this module.
     bool is_initialized;                        ///< Its constructors have run.
+    void* owner_data;                           ///< For the code that loaded the module. The linker does not use it.
+    struct DynlinkModule* next;                 ///< The next module of its program in lookup order, or NULL.
+    struct DynlinkModule* initialized_before;   ///< Private: the module whose constructors ran before this one's.
+    struct DynlinkModule* search_next;          ///< Private: the next module of a search in progress.
+    u64 search_mark;                            ///< Private: the last search that reached the module.
 } DynlinkModule;
+
+_Static_assert(sizeof(DynlinkModule) <= DYNLINK_MODULE_RECORD_SIZE, "A module's record must fit the space that modules reserve");
 
 /// The modules of one program, in lookup order.
 typedef struct DynlinkProgram {
-    DynlinkModule* modules[DYNLINK_MAX_MODULES]; ///< The program first, then libraries breadth-first.
-    u32 module_count;                            ///< Their number.
+    DynlinkModule* first;                        ///< The program. The libraries follow it breadth-first, linked by DynlinkModule::next.
+    DynlinkModule* last;                         ///< The module that was added last.
+    u32 module_count;                            ///< Number of modules.
     size_t tls_start_offset;                     ///< Distance from the thread pointer to the TLS area.
     size_t tls_size;                             ///< Size of the TLS area of all modules.
     size_t tls_align;                            ///< Its alignment.
-    DynlinkModule* init_order[DYNLINK_MAX_MODULES]; ///< Private: the modules in the order their constructors ran.
-    u32 init_order_count;                        ///< Private.
+    DynlinkModule* last_initialized;             ///< Private: the module whose constructors ran last.
     u64 last_tls_id;                             ///< Private: the tls_id of the module that was added last.
+    u64 search_mark;                             ///< Private: the number of the last search.
 } DynlinkProgram;
 
 /**
@@ -121,6 +127,25 @@ typedef struct DynlinkProgram {
  * @return LibnxError_BadInput for an image without a MOD0 header or a usable dynamic section.
  */
 Result dynlinkModuleOpen(DynlinkModule* m, const void* image, size_t size);
+
+/**
+ * @brief Parses a module into the record space that the module's own image reserves.
+ * @param[in] image The NRO image from its first byte, with its BSS.
+ * @param[in] size Size of the image.
+ * @param[out] out_module The module's record, inside the image.
+ * @return As \ref dynlinkModuleOpen, and LibnxError_BadInput for an image that reserves no record
+ *         space or less than this library needs: the module was not built as a module, or with
+ *         an older libounce.
+ */
+Result dynlinkModuleOpenInImage(void* image, size_t size, DynlinkModule** out_module);
+
+/**
+ * @brief Gets the name of a library that a module needs.
+ * @param[in] m Module.
+ * @param[in] index Index of the DT_NEEDED entry, less than DynlinkModule::needed_count.
+ * @return The library's DT_SONAME, or NULL.
+ */
+const char* dynlinkModuleGetNeeded(const DynlinkModule* m, u32 index);
 
 /**
  * @brief Finds a symbol that a module defines and exports.
@@ -137,9 +162,8 @@ void dynlinkProgramCreate(DynlinkProgram* p);
  * @brief Adds a module at the end of the program's lookup order.
  * @param[in] p Program.
  * @param[in] m Module. The program keeps the pointer.
- * @return LibnxError_OutOfMemory when the program has \ref DYNLINK_MAX_MODULES modules.
  */
-Result dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m);
+void dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m);
 
 /**
  * @brief Removes a module from the program.
@@ -168,7 +192,7 @@ const Elf64_Sym* dynlinkProgramFindSymbol(const DynlinkProgram* p, const char* n
  * @param[out] out_module The module that defines it. May be NULL.
  * @return The symbol, or NULL.
  */
-const Elf64_Sym* dynlinkProgramFindSymbolFrom(const DynlinkProgram* p, const DynlinkModule* m, const char* name,
+const Elf64_Sym* dynlinkProgramFindSymbolFrom(DynlinkProgram* p, DynlinkModule* m, const char* name,
                                               const DynlinkModule** out_module);
 
 /**

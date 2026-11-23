@@ -46,8 +46,8 @@ static void _dlSetError(const char* text, const char* name) {
 }
 
 static bool _dlIsHandle(const void* handle) {
-    for (u32 i = 0; i < DYNLINK_MAX_MODULES; i++) {
-        if (handle == &g_rtldModules[i] && g_rtldModules[i].module.base)
+    for (const DynlinkModule* m = g_rtldProgram.first; m; m = m->next) {
+        if (handle == m)
             return true;
     }
     return false;
@@ -108,16 +108,7 @@ static u8* _dlReadFile(const char* name, NroHeader* out_header) {
 
 // Loads a library that is not loaded yet, and adds it to the program with
 // one reference. It is not relocated.
-static RtldModule* _dlLoad(const char* name, const char* soname) {
-    RtldModule* library = NULL;
-    for (u32 i = 0; i < DYNLINK_MAX_MODULES && !library; i++) {
-        if (!g_rtldModules[i].module.base)
-            library = &g_rtldModules[i];
-    }
-    if (!library || g_rtldProgram.module_count == DYNLINK_MAX_MODULES) {
-        _dlSetError("too many shared libraries are loaded", name);
-        return NULL;
-    }
+static DynlinkModule* _dlLoad(const char* name, const char* soname) {
     if (!g_dlRoInitialized) {
         if (R_FAILED(ldrRoInitialize())) {
             _dlSetError("the loader gave no session to load shared libraries with", NULL);
@@ -126,111 +117,132 @@ static RtldModule* _dlLoad(const char* name, const char* soname) {
         g_dlRoInitialized = true;
     }
 
+    RtldLibrary* library = calloc(1, sizeof(*library));
     NroHeader header;
-    u8* memory = _dlReadFile(name, &header);
-    if (!memory)
+    u8* memory = library ? _dlReadFile(name, &header) : NULL;
+    if (!memory) {
+        if (!library)
+            _dlSetError("no memory to load the shared library", name);
+        free(library);
         return NULL;
+    }
 
     u64 base = 0;
     Result rc = ldrRoLoadNro(&base, (u64)(uintptr_t)memory, header.size, (u64)(uintptr_t)memory + header.size,
                              header.bss_size);
     if (R_FAILED(rc)) {
         free(memory);
+        free(library);
         _dlSetError("the shared library could not be mapped", name);
         return NULL;
     }
 
-    rc = dynlinkModuleOpen(&library->module, (const void*)(uintptr_t)base, (size_t)header.size + header.bss_size);
-    const bool is_named = R_SUCCEEDED(rc) && library->module.soname && !strcmp(library->module.soname, soname);
+    // The module's record is in its own image.
+    DynlinkModule* m = NULL;
+    rc = dynlinkModuleOpenInImage((void*)(uintptr_t)base, (size_t)header.size + header.bss_size, &m);
+    const bool is_named = R_SUCCEEDED(rc) && m->soname && !strcmp(m->soname, soname);
     if (!is_named) {
         ldrRoUnloadNro(base);
         free(memory);
-        memset(library, 0, sizeof(*library));
-        _dlSetError("the file is not a shared library with this DT_SONAME", name);
+        free(library);
+        _dlSetError("the file is not a shared library with this DT_SONAME that was built for this libounce", name);
         return NULL;
     }
 
     library->memory = memory;
     library->references = 1;
-    dynlinkProgramAddModule(&g_rtldProgram, &library->module);
-    return library;
+    m->owner_data = library;
+    dynlinkProgramAddModule(&g_rtldProgram, m);
+    return m;
 }
 
-// Gives up one reference to a library that dlopen loaded. Without
-// references, the library's destructors run, it is unloaded, and it gives up
-// its references to the libraries it needs.
-static void _dlRelease(RtldModule* library) {
-    if (!library->memory || --library->references)
-        return;
-
-    // The names of the needed libraries are in the image that is unmapped below.
-    RtldModule* needed[DYNLINK_MAX_NEEDED];
-    for (u32 i = 0; i < library->needed_acquired; i++)
-        needed[i] = (RtldModule*)dynlinkProgramFindModule(&g_rtldProgram, library->module.needed[i]);
-    const u32 needed_count = library->needed_acquired;
+// Runs a library's destructors and unloads it.
+static void _dlUnload(DynlinkModule* m) {
+    RtldLibrary* library = m->owner_data;
 
     // What the library registered with __cxa_atexit, such as the destructors
     // of its static C++ objects, then its destructor functions.
-    if (library->module.is_initialized) {
-        if (library->module.dso_handle)
-            __cxa_finalize(library->module.dso_handle);
-        dynlinkProgramRunModuleDestructors(&g_rtldProgram, &library->module);
+    if (m->is_initialized) {
+        if (m->dso_handle)
+            __cxa_finalize(m->dso_handle);
+        dynlinkProgramRunModuleDestructors(&g_rtldProgram, m);
     }
 
     // The room of its thread-local variables is free again when it is the
     // last in the area.
-    if (library->module.is_tls_static && library->module.tls_size &&
-        library->module.tls_offset + library->module.tls_size == g_rtldTlsUsed)
-        g_rtldTlsUsed = library->module.tls_offset;
+    if (m->is_tls_static && m->tls_size && m->tls_offset + m->tls_size == g_rtldTlsUsed)
+        g_rtldTlsUsed = m->tls_offset;
 
-    dynlinkProgramRemoveModule(&g_rtldProgram, &library->module);
-    ldrRoUnloadNro(library->module.base);
+    // The module's record goes with its image.
+    dynlinkProgramRemoveModule(&g_rtldProgram, m);
+    ldrRoUnloadNro(m->base);
     free(library->memory);
-    memset(library, 0, sizeof(*library));
+    free(library);
+}
 
-    for (u32 i = 0; i < needed_count; i++) {
-        if (needed[i])
-            _dlRelease(needed[i]);
+// Gives up one reference to a library that dlopen loaded. A library with no
+// reference left joins the chain of libraries to unload.
+static void _dlDropReference(DynlinkModule* m, DynlinkModule** chain) {
+    RtldLibrary* library = m->owner_data;
+    if (!library || --library->references)
+        return;
+    library->release_next = *chain;
+    *chain = m;
+}
+
+// Gives up one reference to a library. Without references, the library is
+// unloaded after it gives up its references to the libraries it needs, which
+// can leave those without references too.
+static void _dlRelease(DynlinkModule* m) {
+    DynlinkModule* chain = NULL;
+    _dlDropReference(m, &chain);
+    while (chain) {
+        DynlinkModule* current = chain;
+        RtldLibrary* library = current->owner_data;
+        chain = library->release_next;
+
+        for (u32 i = 0; i < library->needed_acquired; i++) {
+            DynlinkModule* needed = dynlinkProgramFindModule(&g_rtldProgram, dynlinkModuleGetNeeded(current, i));
+            if (needed)
+                _dlDropReference(needed, &chain);
+        }
+        _dlUnload(current);
     }
 }
 
 // Takes a reference to a library, loading it and the libraries it needs when
 // it is not loaded. On failure the caller releases the library it asked for,
 // which gives up what was taken up to the failure.
-static RtldModule* _dlAcquire(const char* name, bool* out_failed) {
+static DynlinkModule* _dlAcquire(const char* name, bool* out_failed) {
     const char* file_name = strrchr(name, '/');
     const char* soname = file_name ? file_name + 1 : name;
 
-    RtldModule* library = (RtldModule*)dynlinkProgramFindModule(&g_rtldProgram, soname);
-    if (library) {
-        if (library->memory)
+    DynlinkModule* m = dynlinkProgramFindModule(&g_rtldProgram, soname);
+    if (m) {
+        RtldLibrary* library = m->owner_data;
+        if (library)
             library->references++;
-        return library;
+        return m;
     }
 
-    library = _dlLoad(name, soname);
-    if (!library) {
+    m = _dlLoad(name, soname);
+    if (!m) {
         *out_failed = true;
         return NULL;
     }
-    for (u32 i = 0; i < library->module.needed_count && !*out_failed; i++) {
-        if (_dlAcquire(library->module.needed[i], out_failed))
+    RtldLibrary* library = m->owner_data;
+    for (u32 i = 0; i < m->needed_count && !*out_failed; i++) {
+        if (_dlAcquire(dynlinkModuleGetNeeded(m, i), out_failed))
             library->needed_acquired++;
     }
-    return library;
+    return m;
 }
 
-typedef struct {
-    DynlinkModule* modules[DYNLINK_MAX_MODULES];
-    u32 count;
-} DlNewModules;
-
 // Gives one thread's area the initial values of the thread-local variables
-// of the new modules that have their block there.
+// of the new modules that have their block there. The new modules are the
+// last of the program's list, from the argument on.
 static void _dlInitializeTls(void* area, void* argument) {
-    const DlNewModules* added = argument;
-    for (u32 i = 0; i < added->count; i++) {
-        const DynlinkModule* m = added->modules[i];
+    for (const DynlinkModule* m = argument; m; m = m->next) {
         if (!m->is_tls_static)
             continue;
         memset((u8*)area + m->tls_offset, 0, m->tls_size);
@@ -241,12 +253,13 @@ static void _dlInitializeTls(void* area, void* argument) {
 // Links the modules that _dlAcquire loaded: places their thread-local
 // variables, relocates them, and runs their constructors.
 static bool _dlLink(void) {
-    DlNewModules added = {0};
-    for (u32 i = 0; i < g_rtldProgram.module_count; i++) {
-        DynlinkModule* m = g_rtldProgram.modules[i];
-        if (m->is_relocated)
-            continue;
-        added.modules[added.count++] = m;
+    // Modules join the end of the list, so the new ones are the first that
+    // is not relocated and all after it.
+    DynlinkModule* first_new = g_rtldProgram.first;
+    while (first_new && first_new->is_relocated)
+        first_new = first_new->next;
+
+    for (DynlinkModule* m = first_new; m; m = m->next) {
         // Only initial-exec code needs the block in the TLS area.
         if (!m->tls_size || !m->needs_static_tls)
             continue;
@@ -272,15 +285,15 @@ static bool _dlLink(void) {
             _dlSetError("a relocation is not supported; compile shared libraries with -ftls-model=initial-exec", NULL);
         return false;
     }
-    for (u32 i = 0; i < added.count; i++) {
-        if (R_FAILED(_rtldProtectModule(added.modules[i]))) {
-            _dlSetError("read-only data could not be protected in", added.modules[i]->soname);
+    for (const DynlinkModule* m = first_new; m; m = m->next) {
+        if (R_FAILED(_rtldProtectModule(m))) {
+            _dlSetError("read-only data could not be protected in", m->soname);
             return false;
         }
     }
 
-    _dlInitializeTls(g_rtldMainTls, &added);
-    _threadForEachTlsArea(_dlInitializeTls, &added);
+    _dlInitializeTls(g_rtldMainTls, first_new);
+    _threadForEachTlsArea(_dlInitializeTls, first_new);
     dynlinkProgramRunConstructors(&g_rtldProgram);
     return true;
 }
@@ -289,20 +302,20 @@ void* dlopen(const char* name, int flags) {
     NX_IGNORE_ARG(flags);
     rmutexLock(&g_rtldLock);
 
-    RtldModule* library;
+    DynlinkModule* m;
     if (!name) {
-        library = (RtldModule*)g_rtldProgram.modules[0];
+        m = g_rtldProgram.first;
     } else {
         bool failed = false;
-        library = _dlAcquire(name, &failed);
-        if (library && (failed || !_dlLink())) {
-            _dlRelease(library);
-            library = NULL;
+        m = _dlAcquire(name, &failed);
+        if (m && (failed || !_dlLink())) {
+            _dlRelease(m);
+            m = NULL;
         }
     }
 
     rmutexUnlock(&g_rtldLock);
-    return library;
+    return m;
 }
 
 void* dlsym(void* handle, const char* name) {
@@ -313,7 +326,7 @@ void* dlsym(void* handle, const char* name) {
     if (handle == RTLD_DEFAULT)
         symbol = dynlinkProgramFindSymbol(&g_rtldProgram, name, &owner);
     else if (_dlIsHandle(handle))
-        symbol = dynlinkProgramFindSymbolFrom(&g_rtldProgram, &((RtldModule*)handle)->module, name, &owner);
+        symbol = dynlinkProgramFindSymbolFrom(&g_rtldProgram, handle, name, &owner);
 
     void* address = NULL;
     if (!symbol)
@@ -352,13 +365,14 @@ char* dlerror(void) {
 // with those of the other modules, and the heap goes with the program.
 void _rtldUnmapLibraries(void) {
     rmutexLock(&g_rtldLock);
-    for (u32 i = 0; i < DYNLINK_MAX_MODULES; i++) {
-        RtldModule* library = &g_rtldModules[i];
-        if (!library->memory)
-            continue;
-        dynlinkProgramRemoveModule(&g_rtldProgram, &library->module);
-        ldrRoUnloadNro(library->module.base);
-        memset(library, 0, sizeof(*library));
+    DynlinkModule* m = g_rtldProgram.first;
+    while (m) {
+        DynlinkModule* next = m->next;
+        if (m->owner_data) {
+            dynlinkProgramRemoveModule(&g_rtldProgram, m);
+            ldrRoUnloadNro(m->base);
+        }
+        m = next;
     }
     if (g_dlRoInitialized) {
         ldrRoExit();

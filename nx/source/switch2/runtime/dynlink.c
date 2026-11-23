@@ -10,6 +10,14 @@
  * The runtime library has an "ORT0" block with its entry
  * (switch2/rtld/rtld_crt0.s).
  *
+ * A module's record (DynlinkModule) is in the module's own image, in space
+ * that the module's start object reserves in the BSS. MOD0's last word, the
+ * "module object" field, locates the space, and the "OMR0" block gives its
+ * size. The modules of a program are a list through their records, so the
+ * linker allocates nothing and a program has no fixed number of modules.
+ * Nintendo's linker keeps its own record of a module where the same field
+ * points; the space, DYNLINK_MODULE_RECORD_SIZE, is larger than that record.
+ *
  * Addresses in the dynamic section and the symbol table are relative to the
  * image's first byte. A program's lookup order is its module order: the
  * first module that defines a name gives every module that name, so a
@@ -31,6 +39,7 @@
  */
 #include <string.h>
 #include "switch2/runtime/dynlink.h"
+
 #include "nro.h"
 
 // MOD0: its magic and six words, then extension blocks of a magic and two
@@ -43,6 +52,7 @@
 #define MOD0_MAGIC_RELRO        0x31594E4C  // "LNY1": start and end of the data that is read-only after relocation.
 #define MOD0_MAGIC_RUNTIME      0x3054524F  // "ORT0": the runtime library's entry.
 #define MOD0_MAGIC_DSO_HANDLE   0x3048444F  // "ODH0": the module's __dso_handle.
+#define MOD0_MAGIC_RECORD       0x30524D4F  // "OMR0": the size of the space for the module's record.
 #define MOD0_MAGIC_TLS_TEMPLATE 0x304C544F  // "OTL0": the initial TLS bytes' start and end.
 #define MOD0_MAGIC_TLS_BLOCK    0x314C544F  // "OTL1": start and end of a block of the TLS size.
 #define MOD0_MAGIC_TLS_ALIGN    0x324C544F  // "OTL2": the word that holds the TLS alignment.
@@ -109,7 +119,8 @@ static void _dynlinkReadBlocks(DynlinkModule* m, const u8* mod0, size_t mod0_off
                 memcpy(&align, mod0 + block.first, sizeof(align));
                 m->tls_align = (size_t)align;
             }
-        } else if ((block.magic & 0x00FFFFFF) != MOD0_MAGIC_LIBNX && block.magic != NROOUNCE_MAGIC) {
+        } else if ((block.magic & 0x00FFFFFF) != MOD0_MAGIC_LIBNX && block.magic != NROOUNCE_MAGIC &&
+                   block.magic != MOD0_MAGIC_RECORD) {
             // Code follows the last block.
             return;
         }
@@ -168,7 +179,6 @@ Result dynlinkModuleOpen(DynlinkModule* m, const void* image, size_t size) {
     _dynlinkReadBlocks(m, mod0, mod0_offset, size);
 
     u64 soname_offset = 0;
-    u64 needed_offsets[DYNLINK_MAX_NEEDED];
     bool has_soname = false;
     size_t rela_size = 0, jmprel_size = 0, relr_size = 0, init_size = 0, fini_size = 0;
     for (const Elf64_Dyn* entry = m->dynamic; entry->d_tag != DT_NULL; entry++) {
@@ -178,11 +188,7 @@ Result dynlinkModuleOpen(DynlinkModule* m, const void* image, size_t size) {
         const u64 value = entry->d_un.d_val;
         switch (entry->d_tag) {
             case DT_SONAME:       soname_offset = value; has_soname = true; break;
-            case DT_NEEDED:
-                if (m->needed_count == DYNLINK_MAX_NEEDED)
-                    return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
-                needed_offsets[m->needed_count++] = value;
-                break;
+            case DT_NEEDED:       m->needed_count++; break;
             case DT_SYMTAB:       m->symtab = (const Elf64_Sym*)(bytes + value); break;
             case DT_STRTAB:       m->strtab = (const char*)(bytes + value); break;
             case DT_STRSZ:        m->strtab_size = value; break;
@@ -222,11 +228,57 @@ Result dynlinkModuleOpen(DynlinkModule* m, const void* image, size_t size) {
         m->soname = m->strtab + soname_offset;
     }
     for (u32 i = 0; i < m->needed_count; i++) {
-        if (needed_offsets[i] >= m->strtab_size)
+        if (!dynlinkModuleGetNeeded(m, i))
             return _dynlinkBadImage();
-        m->needed[i] = m->strtab + needed_offsets[i];
     }
     return 0;
+}
+
+Result dynlinkModuleOpenInImage(void* image, size_t size, DynlinkModule** out_module) {
+    const u8* bytes = (const u8*)image;
+    if (!_dynlinkIsInside(size, MOD0_OFFSET_WORD, sizeof(u32)))
+        return _dynlinkBadImage();
+
+    u32 mod0_offset;
+    memcpy(&mod0_offset, bytes + MOD0_OFFSET_WORD, sizeof(mod0_offset));
+    if (!_dynlinkIsInside(size, mod0_offset, MOD0_HEADER_SIZE))
+        return _dynlinkBadImage();
+
+    Mod0Header header;
+    memcpy(&header, bytes + mod0_offset, sizeof(header));
+    if (header.magic != NROMOD0_MAGIC || !header.module_object_offset)
+        return _dynlinkBadImage();
+
+    // The size of the record space is in the "OMR0" block.
+    size_t record_size = 0;
+    for (u32 i = 0; i < MOD0_EXTENSIONS_MAX && !record_size; i++) {
+        const size_t block_offset = mod0_offset + MOD0_HEADER_SIZE + i * MOD0_EXTENSION_SIZE;
+        if (!_dynlinkIsInside(size, block_offset, MOD0_EXTENSION_SIZE))
+            break;
+        Mod0Extension block;
+        memcpy(&block, bytes + block_offset, sizeof(block));
+        if (block.magic == MOD0_MAGIC_RECORD)
+            record_size = (size_t)block.first;
+    }
+    const u64 record_offset = (u64)mod0_offset + (s64)header.module_object_offset;
+    if (record_size < sizeof(DynlinkModule) || !_dynlinkIsInside(size, record_offset, record_size) ||
+        record_offset % _Alignof(DynlinkModule))
+        return _dynlinkBadImage();
+
+    DynlinkModule* m = (DynlinkModule*)((u8*)image + record_offset);
+    *out_module = m;
+    return dynlinkModuleOpen(m, image, size);
+}
+
+const char* dynlinkModuleGetNeeded(const DynlinkModule* m, u32 index) {
+    for (const Elf64_Dyn* entry = m->dynamic; entry->d_tag != DT_NULL; entry++) {
+        if (entry->d_tag != DT_NEEDED)
+            continue;
+        if (index--)
+            continue;
+        return entry->d_un.d_val < m->strtab_size ? m->strtab + entry->d_un.d_val : NULL;
+    }
+    return NULL;
 }
 
 static u32 _dynlinkSysvHash(const char* name) {
@@ -318,26 +370,38 @@ void dynlinkProgramCreate(DynlinkProgram* p) {
     memset(p, 0, sizeof(*p));
 }
 
-Result dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m) {
-    if (p->module_count == DYNLINK_MAX_MODULES)
-        return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
-    p->modules[p->module_count++] = m;
+void dynlinkProgramAddModule(DynlinkProgram* p, DynlinkModule* m) {
+    m->next = NULL;
+    if (p->last)
+        p->last->next = m;
+    else
+        p->first = m;
+    p->last = m;
+    p->module_count++;
     m->tls_id = ++p->last_tls_id;
-    return 0;
 }
 
 void dynlinkProgramRemoveModule(DynlinkProgram* p, DynlinkModule* m) {
-    u32 kept = 0;
-    for (u32 i = 0; i < p->module_count; i++) {
-        if (p->modules[i] != m)
-            p->modules[kept++] = p->modules[i];
+    DynlinkModule* previous = NULL;
+    for (DynlinkModule* current = p->first; current; previous = current, current = current->next) {
+        if (current != m)
+            continue;
+        if (previous)
+            previous->next = m->next;
+        else
+            p->first = m->next;
+        if (p->last == m)
+            p->last = previous;
+        p->module_count--;
+        m->next = NULL;
+        return;
     }
-    p->module_count = kept;
 }
 
 DynlinkModule* dynlinkProgramFindModule(const DynlinkProgram* p, const char* soname) {
-    for (u32 i = 0; i < p->module_count; i++) {
-        DynlinkModule* m = p->modules[i];
+    if (!soname)
+        return NULL;
+    for (DynlinkModule* m = p->first; m; m = m->next) {
         if (m->soname && !strcmp(m->soname, soname))
             return m;
     }
@@ -345,26 +409,27 @@ DynlinkModule* dynlinkProgramFindModule(const DynlinkProgram* p, const char* son
 }
 
 const Elf64_Sym* dynlinkProgramFindSymbol(const DynlinkProgram* p, const char* name, const DynlinkModule** out_module) {
-    for (u32 i = 0; i < p->module_count; i++) {
-        const Elf64_Sym* symbol = dynlinkModuleFindSymbol(p->modules[i], name);
+    for (const DynlinkModule* m = p->first; m; m = m->next) {
+        const Elf64_Sym* symbol = dynlinkModuleFindSymbol(m, name);
         if (symbol) {
-            if (out_module) *out_module = p->modules[i];
+            if (out_module) *out_module = m;
             return symbol;
         }
     }
     return NULL;
 }
 
-const Elf64_Sym* dynlinkProgramFindSymbolFrom(const DynlinkProgram* p, const DynlinkModule* m, const char* name,
+const Elf64_Sym* dynlinkProgramFindSymbolFrom(DynlinkProgram* p, DynlinkModule* m, const char* name,
                                               const DynlinkModule** out_module) {
     // The modules to search, each one time: the module, then what it needs,
-    // then what those need.
-    const DynlinkModule* order[DYNLINK_MAX_MODULES];
-    u32 count = 0;
-    order[count++] = m;
+    // then what those need. They are a queue through search_next, and a
+    // module that this search has reached carries the search's number.
+    const u64 mark = ++p->search_mark;
+    DynlinkModule* queue_last = m;
+    m->search_mark = mark;
+    m->search_next = NULL;
 
-    for (u32 next = 0; next < count; next++) {
-        const DynlinkModule* current = order[next];
+    for (DynlinkModule* current = m; current; current = current->search_next) {
         const Elf64_Sym* symbol = dynlinkModuleFindSymbol(current, name);
         if (symbol) {
             if (out_module) *out_module = current;
@@ -372,12 +437,13 @@ const Elf64_Sym* dynlinkProgramFindSymbolFrom(const DynlinkProgram* p, const Dyn
         }
 
         for (u32 i = 0; i < current->needed_count; i++) {
-            const DynlinkModule* needed = dynlinkProgramFindModule(p, current->needed[i]);
-            bool is_listed = !needed;
-            for (u32 listed = 0; listed < count && !is_listed; listed++)
-                is_listed = order[listed] == needed;
-            if (!is_listed && count < DYNLINK_MAX_MODULES)
-                order[count++] = needed;
+            DynlinkModule* needed = dynlinkProgramFindModule(p, dynlinkModuleGetNeeded(current, i));
+            if (!needed || needed->search_mark == mark)
+                continue;
+            needed->search_mark = mark;
+            needed->search_next = NULL;
+            queue_last->search_next = needed;
+            queue_last = needed;
         }
     }
     return NULL;
@@ -391,17 +457,16 @@ void dynlinkProgramLayoutTls(DynlinkProgram* p) {
     p->tls_start_offset = TLS_TCB_SIZE;
     p->tls_size = 0;
     p->tls_align = TLS_TCB_SIZE;
-    if (!p->module_count)
+    if (!p->first)
         return;
 
     // The program's code has the distance from the thread pointer to its
     // block built in: the larger of the control block's size and its alignment.
-    const size_t program_align = p->modules[0]->tls_align;
+    const size_t program_align = p->first->tls_align;
     if (program_align > p->tls_start_offset)
         p->tls_start_offset = program_align;
 
-    for (u32 i = 0; i < p->module_count; i++) {
-        DynlinkModule* m = p->modules[i];
+    for (DynlinkModule* m = p->first; m; m = m->next) {
         const size_t align = m->tls_align ? m->tls_align : 1;
         m->tls_offset = _dynlinkAlignUp(p->tls_size, align);
         m->is_tls_static = true;
@@ -526,8 +591,7 @@ static void _dynlinkApplyRelr(const DynlinkModule* m) {
 Result dynlinkProgramRelocate(DynlinkProgram* p, const char** out_symbol) {
     const char* missing = NULL;
     Result rc = 0;
-    for (u32 i = 0; i < p->module_count && R_SUCCEEDED(rc); i++) {
-        DynlinkModule* m = p->modules[i];
+    for (DynlinkModule* m = p->first; m && R_SUCCEEDED(rc); m = m->next) {
         if (m->is_relocated)
             continue;
 
@@ -641,11 +705,9 @@ static u64 _dynlinkUnwindEntryRange(const u8* entry) {
 }
 
 const void* dynlinkProgramFindUnwindEntry(const DynlinkProgram* p, uintptr_t address, uintptr_t* out_function) {
-    const DynlinkModule* m = NULL;
-    for (u32 i = 0; i < p->module_count && !m; i++) {
-        if (address >= p->modules[i]->base && address - p->modules[i]->base < p->modules[i]->size)
-            m = p->modules[i];
-    }
+    const DynlinkModule* m = p->first;
+    while (m && !(address >= m->base && address - m->base < m->size))
+        m = m->next;
     if (!m || m->eh_frame_hdr_size < EH_HDR_TABLE_OFFSET)
         return NULL;
 
@@ -695,19 +757,20 @@ static void _dynlinkInitialize(DynlinkProgram* p, DynlinkModule* m) {
     m->is_initialized = true;
 
     for (u32 i = 0; i < m->needed_count; i++) {
-        DynlinkModule* needed = dynlinkProgramFindModule(p, m->needed[i]);
+        DynlinkModule* needed = dynlinkProgramFindModule(p, dynlinkModuleGetNeeded(m, i));
         if (needed)
             _dynlinkInitialize(p, needed);
     }
 
     for (size_t i = 0; i < m->init_count; i++)
         m->init_array[i]();
-    p->init_order[p->init_order_count++] = m;
+    m->initialized_before = p->last_initialized;
+    p->last_initialized = m;
 }
 
 void dynlinkProgramRunConstructors(DynlinkProgram* p) {
-    for (u32 i = 0; i < p->module_count; i++)
-        _dynlinkInitialize(p, p->modules[i]);
+    for (DynlinkModule* m = p->first; m; m = m->next)
+        _dynlinkInitialize(p, m);
 }
 
 static void _dynlinkFinalize(DynlinkModule* m) {
@@ -717,20 +780,27 @@ static void _dynlinkFinalize(DynlinkModule* m) {
 }
 
 void dynlinkProgramRunDestructors(DynlinkProgram* p) {
-    while (p->init_order_count)
-        _dynlinkFinalize(p->init_order[--p->init_order_count]);
+    while (p->last_initialized) {
+        DynlinkModule* m = p->last_initialized;
+        p->last_initialized = m->initialized_before;
+        m->initialized_before = NULL;
+        _dynlinkFinalize(m);
+    }
 }
 
 void dynlinkProgramRunModuleDestructors(DynlinkProgram* p, DynlinkModule* m) {
-    u32 kept = 0;
-    bool had_constructors = false;
-    for (u32 i = 0; i < p->init_order_count; i++) {
-        if (p->init_order[i] == m)
-            had_constructors = true;
+    // Takes the module out of the chain of constructed modules, where it is
+    // only when its constructors ran.
+    DynlinkModule* after = NULL;
+    for (DynlinkModule* current = p->last_initialized; current; after = current, current = current->initialized_before) {
+        if (current != m)
+            continue;
+        if (after)
+            after->initialized_before = m->initialized_before;
         else
-            p->init_order[kept++] = p->init_order[i];
-    }
-    p->init_order_count = kept;
-    if (had_constructors)
+            p->last_initialized = m->initialized_before;
+        m->initialized_before = NULL;
         _dynlinkFinalize(m);
+        return;
+    }
 }

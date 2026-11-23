@@ -30,7 +30,8 @@ typedef struct {
 } RtldTlsEntry;
 
 typedef struct {
-    RtldTlsEntry entries[DYNLINK_MAX_MODULES];
+    RtldTlsEntry* entries;  // Grows when the thread uses more modules than it holds.
+    u32 capacity;
 } RtldThreadTls;
 
 // The dynamic TLS slot of the tables, taken when the first thread needs one.
@@ -39,17 +40,18 @@ static _Atomic s32 g_rtldTlsSlot = -1;
 // Frees a thread's table and blocks, when the thread exits.
 static void _rtldTlsFreeThread(void* value) {
     RtldThreadTls* table = value;
-    for (u32 i = 0; i < DYNLINK_MAX_MODULES; i++) {
+    for (u32 i = 0; i < table->capacity; i++) {
         if (table->entries[i].is_allocated)
             free(table->entries[i].block);
     }
+    free(table->entries);
     free(table);
 }
 
 static const DynlinkModule* _rtldTlsFindModule(u64 id) {
-    for (u32 i = 0; i < g_rtldProgram.module_count; i++) {
-        if (g_rtldProgram.modules[i]->tls_id == id)
-            return g_rtldProgram.modules[i];
+    for (const DynlinkModule* m = g_rtldProgram.first; m; m = m->next) {
+        if (m->tls_id == id)
+            return m;
     }
     return NULL;
 }
@@ -89,7 +91,7 @@ static u8* _rtldTlsAddBlock(u64 id) {
 
     // The entries of libraries that were unloaded make room for new ones.
     RtldTlsEntry* entry = NULL;
-    for (u32 i = 0; i < DYNLINK_MAX_MODULES; i++) {
+    for (u32 i = 0; i < table->capacity; i++) {
         RtldTlsEntry* candidate = &table->entries[i];
         if (candidate->id && !_rtldTlsFindModule(candidate->id)) {
             if (candidate->is_allocated)
@@ -100,10 +102,21 @@ static u8* _rtldTlsAddBlock(u64 id) {
             entry = candidate;
     }
 
+    if (!entry) {
+        const u32 capacity = table->capacity ? table->capacity * 2 : 8;
+        RtldTlsEntry* grown = realloc(table->entries, capacity * sizeof(RtldTlsEntry));
+        if (!grown)
+            diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_OutOfMemory));
+        memset(grown + table->capacity, 0, (capacity - table->capacity) * sizeof(RtldTlsEntry));
+        entry = grown + table->capacity;
+        table->entries = grown;
+        table->capacity = capacity;
+    }
+
     // A call with the id of no loaded module is from code of a library that
     // was unloaded.
     const DynlinkModule* m = _rtldTlsFindModule(id);
-    if (!m || !entry)
+    if (!m)
         diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_BadInput));
 
     entry->id = id;
@@ -123,7 +136,7 @@ void* __tls_get_addr(const size_t* index) {
     const s32 slot = atomic_load(&g_rtldTlsSlot);
     const RtldThreadTls* table = slot >= 0 ? threadTlsGet(slot) : NULL;
     if (table) {
-        for (u32 i = 0; i < DYNLINK_MAX_MODULES; i++) {
+        for (u32 i = 0; i < table->capacity; i++) {
             if (table->entries[i].id == id)
                 return table->entries[i].block + index[1];
         }

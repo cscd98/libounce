@@ -100,7 +100,7 @@ __nx_mod0:
     .word  __bss_end__          - __nx_mod0
     .word  __eh_frame_hdr_start - __nx_mod0
     .word  __eh_frame_hdr_end   - __nx_mod0
-    .word  0
+    .word  __ounce_module_record - __nx_mod0
 
     // The same blocks as a module's MOD0 (switch2/module/module_crt0.s).
     .ascii "LNY0"
@@ -131,6 +131,12 @@ __nx_mod0:
     .word  __tls_align          - __nx_mod0
     .word  0x0
 
+    // The size of the space for libounce.so's own module record, which
+    // MOD0's last word locates.
+    .ascii "OMR0"
+    .word  0x200
+    .word  0x0
+
     // The runtime library's record: the entry that the loader enters, and
     // the version of the loader's DynlinkLoadInfo that it reads.
     .ascii "ORT0"
@@ -144,3 +150,12 @@ __nx_mod0:
 
 __stack_top:
     .space 8
+
+// The space for libounce.so's own module record (DynlinkModule), as every
+// module has it (switch2/module/module_crt0.s).
+.section .bss.__ounce_module_record, "aw", %nobits
+.global __ounce_module_record
+.hidden __ounce_module_record
+.align 4
+__ounce_module_record:
+    .space 0x200

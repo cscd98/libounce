@@ -12,16 +12,17 @@
 // model does not use it (tls_dynamic.c).
 #define RTLD_TLS_SPARE 0x1000
 
-// A module and what the runtime linker keeps for it.
+// What the runtime linker keeps for a library that dlopen loaded, in the
+// module's owner_data. A module that the loader mapped has none: it stays for
+// the life of the program.
 typedef struct {
-    DynlinkModule module;   // First: a DynlinkModule of the program is one of these.
-    void* memory;           // The heap pages under a library that dlopen loaded. NULL for a module that the loader mapped.
-    u32 references;         // The handles and loaded libraries that need a library that dlopen loaded.
-    u32 needed_acquired;    // How many of its DT_NEEDED libraries it holds a reference to.
-} RtldModule;
+    void* memory;                   // The heap pages under the library's image.
+    u32 references;                 // The handles and loaded libraries that need it.
+    u32 needed_acquired;            // How many of its DT_NEEDED libraries it holds a reference to.
+    DynlinkModule* release_next;    // The next library with no reference left, while they are unloaded.
+} RtldLibrary;
 
-// A free entry has no base address.
-extern RtldModule g_rtldModules[DYNLINK_MAX_MODULES];
+// The program's modules. Each module's record is in the module's own image.
 extern DynlinkProgram g_rtldProgram;
 
 // Held to read or change the modules after startup. An exception that passes
