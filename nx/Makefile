@@ -365,7 +365,7 @@ lib/libounce_shared.a : lib release-switch2-shared $(SOURCES) $(INCLUDES)
 #---------------------------------------------------------------------------------
 SHARED_BUILD	:=	release-switch2-shared
 SHARED_NEWLIB	:=	libc.a libm.a libsysbase.a
-SHARED_NAMES	:=	libounce.so libnx.so libc.so libg.so libm.so libpthread.so libsysbase.so
+SHARED_NAMES	:=	libounce.so libnx.so libc.so libg.so libm.so libpthread.so libdl.so libsysbase.so
 SHARED_CXX_NAMES	:=	libstdc++.so libsupc++.so
 
 # The symbols that a program can replace are libounce's weak definitions:

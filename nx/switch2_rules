@@ -56,7 +56,8 @@ OVERLAY_LIBPATHS	:=	-L$(PORTLIBS_SWITCH2)/lib
 # For a dynamically linked program or a shared library. The thread-local
 # variables of a module use the initial-exec model; the linker specs put
 # libounce.so and the module start object in the link; the shared libraries
-# of the Switch 2 portlibs come before its static ones.
+# of the Switch 2 portlibs come before its static ones. -rpath-link is where
+# the linker looks for a library that another shared library needs.
 SWITCH2_SHARED_ARCH	:=	$(SWITCH2_CPU) -mtp=soft -fPIC -ftls-model=initial-exec
 SWITCH2_SHARED_SPECS	:=	$(LIBNX)/switch_shared.specs
-SWITCH2_SHARED_LIBPATHS	:=	-L$(PORTLIBS_SWITCH2)/lib/shared
+SWITCH2_SHARED_LIBPATHS	:=	-L$(PORTLIBS_SWITCH2)/lib/shared -Wl,-rpath-link,$(PORTLIBS_SWITCH2)/lib/shared
