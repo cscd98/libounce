@@ -131,7 +131,11 @@ static DynlinkModule* _dlLoad(const char* name, const char* soname) {
     if (R_FAILED(rc)) {
         free(memory);
         free(library);
-        _dlSetError("the shared library could not be mapped", name);
+        // The loader's result says why: its address search, the kernel, or
+        // a file that is not a valid NRO.
+        char reason[64];
+        snprintf(reason, sizeof(reason), "the shared library could not be mapped (result 0x%x)", rc);
+        _dlSetError(reason, name);
         return NULL;
     }
 
