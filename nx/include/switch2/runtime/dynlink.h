@@ -47,9 +47,36 @@
 /// Value[0] is the address of a \ref DynlinkLoadInfo.
 #define DYNLINK_CONFIG_ENTRY_KEY 0x4F4D4F44
 
-/// What a dynamically linked program returns to a loader that entered it as a statically
-/// linked one, without its runtime library.
-#define DYNLINK_RESULT_NOT_LINKED MAKERESULT(Module_HomebrewAbi, 200)
+/// @name Results of a dynamically linked program that did not start
+/// The loader or the runtime library returns one of these in place of running the program,
+/// and a menu shows it as the program's result (2346-0200 and so on). Each has one cause,
+/// so that the number alone tells a user what to do. The loader's record has the detail,
+/// such as the library's name.
+///@{
+
+/// The loader does not load shared libraries: it entered the program as a statically linked
+/// one, without its runtime library. The program's own start code returns this. The loader
+/// is older than dynamic linking.
+#define DYNLINK_RESULT_NOT_LINKED           MAKERESULT(Module_HomebrewAbi, 200)
+/// A shared library that the program or one of its libraries needs is not in the program's
+/// directory or in the loader's library directory.
+#define DYNLINK_RESULT_LIBRARY_NOT_FOUND    MAKERESULT(Module_HomebrewAbi, 201)
+/// A shared library's file was found and is not usable: it is not a shared library that was
+/// built for this libounce, it has another DT_SONAME than its name, or it could not be mapped.
+#define DYNLINK_RESULT_LIBRARY_NOT_LOADED   MAKERESULT(Module_HomebrewAbi, 202)
+/// A module refers to a symbol that no module of the program defines: a library is older
+/// or newer than the one the program was built with.
+#define DYNLINK_RESULT_UNDEFINED_SYMBOL     MAKERESULT(Module_HomebrewAbi, 203)
+/// A module has a relocation that the linker does not support, as from a thread-local
+/// variable that was not compiled for the initial-exec model.
+#define DYNLINK_RESULT_BAD_RELOCATION       MAKERESULT(Module_HomebrewAbi, 204)
+/// A library of the loader's preload directory could not be loaded.
+#define DYNLINK_RESULT_PRELOAD_NOT_LOADED   MAKERESULT(Module_HomebrewAbi, 205)
+/// None of the program's libraries is the runtime library (libounce.so), or the runtime
+/// library got no list of modules from the loader.
+#define DYNLINK_RESULT_NO_RUNTIME_LIBRARY   MAKERESULT(Module_HomebrewAbi, 206)
+
+///@}
 
 /// An image that the loader mapped.
 typedef struct DynlinkLoadedModule {

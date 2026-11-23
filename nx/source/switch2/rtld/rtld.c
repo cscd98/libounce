@@ -132,7 +132,7 @@ RTLD_HIDDEN Result _rtldLinkProgram(const ConfigEntry* entries, uintptr_t own_ba
     }
     if (!info || !info->module_count) {
         _rtldWriteMessage(info, "the loader gave no usable module list", NULL);
-        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+        return DYNLINK_RESULT_NO_RUNTIME_LIBRARY;
     }
 
     dynlinkProgramCreate(&g_rtldProgram);
@@ -141,7 +141,7 @@ RTLD_HIDDEN Result _rtldLinkProgram(const ConfigEntry* entries, uintptr_t own_ba
         const Result rc = dynlinkModuleOpenInImage((void*)info->modules[i].base, info->modules[i].size, &m);
         if (R_FAILED(rc)) {
             _rtldWriteMessage(info, "a module is not a dynamically linked NRO that was built for this libounce", NULL);
-            return rc;
+            return DYNLINK_RESULT_LIBRARY_NOT_LOADED;
         }
         dynlinkProgramAddModule(&g_rtldProgram, m, true);
         m->is_self_relocated = m->base == own_base;
@@ -156,12 +156,13 @@ RTLD_HIDDEN Result _rtldLinkProgram(const ConfigEntry* entries, uintptr_t own_ba
     const char* symbol = NULL;
     Result rc = dynlinkProgramRelocate(&g_rtldProgram, &symbol);
     if (R_FAILED(rc)) {
-        if (symbol)
+        if (symbol) {
             _rtldWriteMessage(info, "undefined symbol: ", symbol);
-        else
-            _rtldWriteMessage(info, "a module has a relocation that is not supported; "
-                                    "compile shared libraries with -ftls-model=initial-exec", NULL);
-        return rc;
+            return DYNLINK_RESULT_UNDEFINED_SYMBOL;
+        }
+        _rtldWriteMessage(info, "a module has a relocation that is not supported; "
+                                "compile shared libraries with -ftls-model=initial-exec", NULL);
+        return DYNLINK_RESULT_BAD_RELOCATION;
     }
 
     for (const DynlinkModule* m = g_rtldProgram.first; m && R_SUCCEEDED(rc); m = m->next)
