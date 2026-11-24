@@ -124,10 +124,29 @@ static void _EntryWrap(ThreadEntryArgs* args) {
     g_threadList = args->t;
     mutexUnlock(&g_threadMutex);
 
+#ifdef LIBOUNCE_SHARED
+    // threadCreate gave the area its initial values. A library that dlopen
+    // loaded between then and now is not among them, and dlopen did not find
+    // this thread in the list, so give the values again.
+    initializeTlsArea(args->tls);
+#endif
+
     // Launch thread entrypoint
     args->entry(args->arg);
     threadExit();
 }
+
+#ifdef LIBOUNCE_SHARED
+void _threadForEachTlsArea(void (*function)(void* area, void* argument), void* argument) {
+    mutexLock(&g_threadMutex);
+    for (Thread* t = g_threadList; t; t = t->next) {
+        // threadCreate puts the area after the stack and its entry arguments.
+        if (t != &g_mainThread)
+            function((u8*)t->stack_mirror + t->stack_sz + sizeof(ThreadEntryArgs), argument);
+    }
+    mutexUnlock(&g_threadMutex);
+}
+#endif
 
 void __libnx_init_thread(void) {
     g_mainThread.handle         = envGetMainThreadHandle();
@@ -161,7 +180,7 @@ Result threadCreate(
     int prio, int cpuid)
 {
     const size_t reent_sz = (sizeof(struct _reent)+0xF) &~ 0xF;
-    const size_t tls_sz = (__tls_end-__tls_start+0xF) &~ 0xF;
+    const size_t tls_sz = (getTlsAreaSize()+0xF) &~ 0xF;
 
     // Verify stack size alignment
     if (stack_sz & 0xFFF) {
@@ -181,7 +200,7 @@ Result threadCreate(
         }
 
         // Ensure we don't go out of bounds.
-        size_t align_mask = getTlsStartOffset()-1;
+        size_t align_mask = getTlsAreaAlign()-1;
         size_t needed_sz = (tls_sz + reent_sz + align_mask) &~ align_mask;
         if (stack_sz <= needed_sz + sizeof(ThreadEntryArgs)) {
             return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
@@ -245,12 +264,7 @@ Result threadCreate(
             args->reent->_stderr = cur->_stderr;
 
             // Set up child thread's TLS segment
-            size_t tls_load_sz = __tdata_lma_end - __tdata_lma;
-            size_t tls_bss_sz = tls_sz - tls_load_sz;
-            if (tls_load_sz)
-                memcpy(args->tls, __tdata_lma, tls_load_sz);
-            if (tls_bss_sz)
-                memset(args->tls+tls_load_sz, 0, tls_bss_sz);
+            initializeTlsArea(args->tls);
         }
 
         if (R_FAILED(rc)) {
@@ -318,7 +332,7 @@ Result threadClose(Thread* t) {
     if (t->tls_array)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
 
-    const size_t tls_sz = (__tls_end-__tls_start+0xF) &~ 0xF;
+    const size_t tls_sz = (getTlsAreaSize()+0xF) &~ 0xF;
     const size_t reent_sz = (sizeof(struct _reent)+0xF) &~ 0xF;
     const size_t aligned_stack_sz = (t->stack_sz + sizeof(ThreadEntryArgs) + tls_sz + reent_sz + 0xFFF) & ~0xFFF;
 

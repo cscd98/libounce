@@ -61,8 +61,11 @@ CODE_BEGIN __libnx_exception_entry
     cbnz w6, __libnx_exception_entry_abort
 
     // Abort when IsCurrentProcessBeingDebugged is set where __nx_exception_ignoredebug==0.
-    adrp x6, __nx_exception_ignoredebug
-    ldr  w5, [x6, #:lo12:__nx_exception_ignoredebug]
+    // A program can replace this variable and the exception stack below, so
+    // libounce.so must find them through the GOT.
+    adrp x6, :got:__nx_exception_ignoredebug
+    ldr  x6, [x6, #:got_lo12:__nx_exception_ignoredebug]
+    ldr  w5, [x6]
 
     cbnz w5, __libnx_exception_entry_start
     cbnz x7, __libnx_exception_entry_abort
@@ -113,11 +116,12 @@ __libnx_exception_entry_start:
     str x3, [x2], #8
 
     // sp
-    adrp x4, __nx_exception_stack
-    add  x4, x4, #:lo12:__nx_exception_stack
+    adrp x4, :got:__nx_exception_stack
+    ldr  x4, [x4, #:got_lo12:__nx_exception_stack]
 
-    adrp x5, __nx_exception_stack_size
-    ldr  x5, [x5, #:lo12:__nx_exception_stack_size]
+    adrp x5, :got:__nx_exception_stack_size
+    ldr  x5, [x5, #:got_lo12:__nx_exception_stack_size]
+    ldr  x5, [x5]
     add x4, x4, x5
 
     ldr x3, [x1]

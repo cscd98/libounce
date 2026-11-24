@@ -37,6 +37,13 @@ ifeq ($(MALLOC_INIT),1)
 SOURCES		:=	source/switch2/malloc_init
 DATA		:=
 endif
+# SHARED=1 builds libounce_shared.a, the objects of libounce.so: the whole
+# library with its allocator and the runtime linker (source/switch2/rtld),
+# compiled for a shared library.
+ifeq ($(SHARED),1)
+SOURCES		+=	source/switch2/malloc source/switch2/rtld
+INCLUDES	+=	external/mimalloc/include
+endif
 endif
 
 #---------------------------------------------------------------------------------
@@ -45,7 +52,14 @@ endif
 ifeq ($(SWITCH2),1)
 # The Switch 2's CPU, as switch2_rules gives it to programs.
 include $(dir $(abspath $(firstword $(MAKEFILE_LIST))))switch2_cpu.mk
+# A program's thread-local variables are at offsets that its link fixes
+# (local-exec). A shared library's are placed when the program starts, and its
+# code reads their offsets from the GOT (initial-exec).
+ifeq ($(SHARED),1)
+ARCH	:=	$(SWITCH2_CPU) -mtp=soft -fPIC -ftls-model=initial-exec
+else
 ARCH	:=	$(SWITCH2_CPU) -mtp=soft -fPIC -ftls-model=local-exec
+endif
 else
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec
 endif
@@ -60,6 +74,10 @@ CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DLIBNX_NO_DEPRECATION
 
 ifeq ($(SWITCH2),1)
 CFLAGS	+=	-D__SWITCH2__
+endif
+
+ifeq ($(SHARED),1)
+CFLAGS	+=	-DLIBOUNCE_SHARED -DLIBOUNCE_MALLOC_LINKED
 endif
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
@@ -107,6 +125,11 @@ endif
 
 export OFILES_BIN	:=	$(addsuffix .o,$(BINFILES))
 export OFILES_SRC	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
+ifeq ($(SHARED),1)
+# libounce.so has its own startup code (rtld_crt0.s) and no need to relocate
+# itself as a program does (dynamic.c). The allocator has heap.c's functions.
+export OFILES_SRC	:=	$(filter-out switch_crt0.o dynamic.o heap.o,$(OFILES_SRC))
+endif
 export OFILES 	:=	$(OFILES_BIN) $(OFILES_SRC)
 export HFILES	:=	$(addsuffix .h,$(subst .,_,$(BINFILES)))
 
@@ -115,8 +138,8 @@ export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 			-I. \
 			-iquote $(CURDIR)/include/switch/
 
-.PHONY: clean all switch1 switch2 install install-switch1 install-switch2 dist-src lib/libnx.a lib/libnxd.a lib/libounce.a lib/libounced.a \
-	lib/libounce_core.a lib/libounce_cored.a lib/libounce_malloc.a lib/libounce_mallocd.a
+.PHONY: clean all switch1 switch2 shared shared-abi-update shared-abi-force lib/shared/names install-shared install install-switch1 install-switch2 dist-src lib/libnx.a lib/libnxd.a lib/libounce.a lib/libounced.a \
+	lib/libounce_core.a lib/libounce_cored.a lib/libounce_malloc.a lib/libounce_mallocd.a lib/libounce_shared.a
 
 #---------------------------------------------------------------------------------
 # The Switch 2 library is the default; libnx for Switch 1 builds from the same
@@ -124,7 +147,31 @@ export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 all: switch2
 
 switch2:
-	@$(MAKE) SWITCH2=1 lib/libounce.a lib/libounced.a
+	@$(MAKE) SWITCH2=1 lib/libounce.a lib/libounced.a lib/ounce_module_crt0.o
+
+# libounce.so, the runtime library of dynamically linked programs, with what
+# links a program or a shared library against it (lib/shared, and the start
+# object of a module).
+shared:
+	@$(MAKE) SWITCH2=1 SHARED=1 lib/shared/nro/libounce.so.1 lib/shared/nro/libstdc++.so.6 \
+		lib/shared/names lib/ounce_module_crt0.o
+
+# Writes libounce.abi, the list of the symbols that libounce.so exports, from
+# the library as it is now. make shared fails when the two differ, so that a
+# change of the ABI is a change of that file.
+shared-abi-update:
+	@$(MAKE) SWITCH2=1 SHARED=1 SHARED_ABI_UPDATE=--update release-switch2-shared/libounce.exports
+
+# Installs libounce.so beside the static library. A program links it with
+# -specs=$(DEVKITPRO)/libounce/switch_shared.specs.
+install-shared: shared
+	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/lib/shared/nro
+	@cp -v switch_shared.specs $(DESTDIR)$(DEVKITPRO)/libounce/
+	@cp -v lib/ounce_module_crt0.o $(DESTDIR)$(DEVKITPRO)/libounce/lib/
+	@cp -v lib/shared/lib*.so lib/shared/libounce.so.1 lib/shared/libstdc++.so.6 \
+		$(DESTDIR)$(DEVKITPRO)/libounce/lib/shared/
+	@cp -v lib/shared/nro/libounce.so.1 lib/shared/nro/libstdc++.so.6 \
+		$(DESTDIR)$(DEVKITPRO)/libounce/lib/shared/nro/
 
 switch1: lib/libnx.a lib/libnxd.a
 
@@ -150,7 +197,8 @@ install-switch2: switch2
 		'#ifndef __SWITCH2__' '#define __SWITCH2__ 1' '#endif' > $(DESTDIR)$(DEVKITPRO)/libounce/include/switch/target.h
 	@cp -rv external/bsd/include $(DESTDIR)$(DEVKITPRO)/libounce/
 	@cp -v lib/libounce.a lib/libounced.a lib/libounce_core.a lib/libounce_cored.a \
-		lib/libounce_malloc.a lib/libounce_mallocd.a $(DESTDIR)$(DEVKITPRO)/libounce/lib/
+		lib/libounce_malloc.a lib/libounce_mallocd.a lib/ounce_module_crt0.o \
+		$(DESTDIR)$(DEVKITPRO)/libounce/lib/
 	@echo 'INPUT(libounce.a)' > $(DESTDIR)$(DEVKITPRO)/libounce/lib/libnx.a
 	@echo 'INPUT(libounced.a)' > $(DESTDIR)$(DEVKITPRO)/libounce/lib/libnxd.a
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/libounce/cmake/Platform $(DESTDIR)$(DEVKITPRO)/portlibs/switch2/bin
@@ -211,6 +259,12 @@ debug-switch2-malloc:
 release-switch2-malloc-init:
 	@[ -d $@ ] || mkdir -p $@
 
+release-switch2-shared:
+	@[ -d $@ ] || mkdir -p $@
+
+lib/shared:
+	@[ -d $@ ] || mkdir -p $@
+
 debug-switch2-malloc-init:
 	@[ -d $@ ] || mkdir -p $@
 
@@ -237,6 +291,12 @@ define merge_ounce
 	@$(AR) s $(1).tmp
 	@mv $(1).tmp $(1)
 endef
+
+# The start of a dynamically linked module's image (source/switch2/module):
+# the object that is linked first in every shared library and every
+# dynamically linked program. It is not part of libounce.a.
+lib/ounce_module_crt0.o : source/switch2/module/module_crt0.s | lib
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 lib/libounce.a : lib/libounce_core.a | lib
 	@$(MAKE) --no-print-directory SWITCH2=1 MALLOC=1 lib/libounce_malloc.a
@@ -285,6 +345,113 @@ lib/libounce_malloc_init.a : lib release-switch2-malloc-init $(SOURCES) $(INCLUD
 	--no-print-directory -C release-switch2-malloc-init \
 	-f $(CURDIR)/Makefile
 
+lib/libounce_shared.a : lib release-switch2-shared $(SOURCES) $(INCLUDES)
+	@$(MAKE) BUILD=release-switch2-shared SWITCH2=1 SHARED=1 OUTPUT=$(CURDIR)/$@ \
+	BUILD_CFLAGS="-DNDEBUG=1 -O2" \
+	DEPSDIR=$(CURDIR)/release-switch2-shared \
+	--no-print-directory -C release-switch2-shared \
+	-f $(CURDIR)/Makefile
+	$(call localize_mimalloc,$@)
+
+#---------------------------------------------------------------------------------
+# libounce.so holds libounce, its allocator, the runtime linker and newlib:
+# it is the one C library of a dynamically linked program and of the shared
+# libraries that the program uses.
+#
+#   lib/shared/libounce.so.1      the ELF shared library that programs link
+#   lib/shared/lib*.so            linker scripts, so that -lounce and -lc find it
+#   lib/shared/nro/libounce.so.1  the NRO that the console loads, in the
+#                                 program's directory or sdmc:/kaihen/lib
+#---------------------------------------------------------------------------------
+SHARED_BUILD	:=	release-switch2-shared
+SHARED_NEWLIB	:=	libc.a libm.a libsysbase.a
+SHARED_NAMES	:=	libounce.so libnx.so libc.so libg.so libm.so libpthread.so libdl.so libsysbase.so
+SHARED_CXX_NAMES	:=	libstdc++.so libsupc++.so
+
+# The symbols that a program can replace are libounce's weak definitions:
+# __appInit, __nx_heap_size, malloc and the like. Every other reference in
+# libounce.so binds to libounce.so itself, without the GOT.
+$(SHARED_BUILD)/libounce.hooks : lib/libounce_shared.a
+	@{ echo '{'; $(NM) -g --defined-only $< | awk '$$2 ~ /^[WV]$$/ { print $$3 ";" }' | sort -u; echo '};'; } > $@
+
+# newlib's objects, without those that libounce replaces and those that
+# cannot link (../toolchain/newlib-for-shared.py; its report is newlib.txt).
+$(SHARED_BUILD)/newlib.txt : lib/libounce_shared.a ../toolchain/newlib-for-shared.py
+	python3 ../toolchain/newlib-for-shared.py --nm $(NM) --ar $(AR) \
+		--out $(SHARED_BUILD)/newlib --report $@ \
+		--first $< --provided $(shell $(CC) $(ARCH) -print-libgcc-file-name) --allow main \
+		$(foreach lib,$(SHARED_NEWLIB),$(shell $(CC) $(ARCH) -print-file-name=$(lib)))
+
+# The symbols that libounce.so exports: what a public header declares, the
+# hooks, and what the toolchain's libraries need from libounce; all of newlib
+# (../toolchain/libounce-exports.py). libounce.abi records libounce's part,
+# and the rule fails when the library's exports are not that list. The extra
+# names are ones that compiled code refers to and no header declares:
+# __tls_get_addr for general-dynamic thread-local variables, and devkitPro's
+# __system_argc and __system_argv.
+SHARED_EXTRA_EXPORTS	:=	__tls_get_addr __system_argc __system_argv
+SHARED_ABI_UPDATE	?=
+
+# An update of the list runs the rule even when its output is new.
+shared-abi-force:
+
+$(SHARED_BUILD)/libounce.exports : lib/libounce_shared.a $(SHARED_BUILD)/newlib.txt ../toolchain/libounce-exports.py $(wildcard libounce.abi) $(if $(SHARED_ABI_UPDATE),shared-abi-force)
+	python3 ../toolchain/libounce-exports.py --nm $(NM) --cc $(CC) --flag=-D__SWITCH__ --flag=-D__SWITCH2__ \
+		--library lib/libounce_shared.a \
+		$(foreach lib,$(SHARED_NEWLIB),--newlib $(SHARED_BUILD)/newlib/$(lib)) \
+		--toolchain $(shell $(CXX) $(ARCH) -print-file-name=libstdc++.a) \
+		--toolchain $(shell $(CC) $(ARCH) -print-libgcc-file-name) \
+		--include include --include include/switch --include external/bsd/include \
+		--system-include $(DEVKITPRO)/devkitA64/aarch64-none-elf/include \
+		$(foreach symbol,$(SHARED_EXTRA_EXPORTS),--extra $(symbol)) \
+		--abi libounce.abi --version-script $@ $(SHARED_ABI_UPDATE)
+
+# The link is kept only when main is the one symbol that libounce.so needs
+# from a program: with another, the library would not load.
+lib/shared/libounce.so.1 : lib/libounce_shared.a $(SHARED_BUILD)/libounce.hooks $(SHARED_BUILD)/libounce.exports $(SHARED_BUILD)/newlib.txt switch.ld | lib/shared
+	$(CC) $(ARCH) -shared -nostdlib -nostartfiles -Wl,-T,switch.ld -Wl,-soname,libounce.so.1 \
+		-Wl,-z,text -Wl,-z,now -Wl,-z,pack-relative-relocs -Wl,--build-id=sha1 -Wl,--hash-style=gnu \
+		-Wl,--eh-frame-hdr -Wl,--dynamic-list=$(SHARED_BUILD)/libounce.hooks \
+		-Wl,--version-script=$(SHARED_BUILD)/libounce.exports \
+		-Wl,--whole-archive lib/libounce_shared.a \
+		$(foreach lib,$(SHARED_NEWLIB),$(SHARED_BUILD)/newlib/$(lib)) -Wl,--no-whole-archive \
+		-lgcc -Wl,-Map,$(SHARED_BUILD)/libounce.map -o $(SHARED_BUILD)/libounce.so.1
+	@undefined=$$($(NM) -D --undefined-only $(SHARED_BUILD)/libounce.so.1 | awk '$$1 == "U" && $$2 != "main" { print $$2 }'); \
+	if [ -n "$$undefined" ]; then \
+		echo "libounce.so needs symbols that nothing defines:" $$undefined; exit 1; \
+	fi
+	@mv $(SHARED_BUILD)/libounce.so.1 $@
+
+# With lib/shared first in the library path (switch_shared.specs), -lounce,
+# -lnx and the names of newlib's own libraries all find libounce.so.1, and
+# never a static archive beside it.
+lib/shared/names : $(addprefix lib/shared/,$(SHARED_NAMES) $(SHARED_CXX_NAMES))
+
+$(addprefix lib/shared/,$(SHARED_NAMES)) : lib/shared/libounce.so.1
+	@echo 'INPUT(libounce.so.1)' > $@
+
+lib/shared/nro/libounce.so.1 : lib/shared/libounce.so.1
+	@mkdir -p lib/shared/nro
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@
+
+# The toolchain's C++ library as a shared library on libounce.so: one C++
+# runtime for a program and its libraries. With a static copy in each
+# module, an exception that one module throws would be caught by another
+# module's runtime. Everything it needs is in libounce.so, or the link fails.
+lib/shared/libstdc++.so.6 : lib/shared/libounce.so.1 lib/ounce_module_crt0.o switch.ld
+	$(CC) $(ARCH) -shared -nostdlib -nostartfiles -Wl,-T,switch.ld -Wl,-soname,libstdc++.so.6 \
+		-Wl,-z,text -Wl,-z,now -Wl,-z,pack-relative-relocs -Wl,--build-id=sha1 -Wl,--hash-style=gnu \
+		-Wl,--eh-frame-hdr -Wl,-z,defs lib/ounce_module_crt0.o \
+		-Wl,--whole-archive $(shell $(CXX) $(ARCH) -print-file-name=libstdc++.a) -Wl,--no-whole-archive \
+		lib/shared/libounce.so.1 -lgcc -o $@
+
+$(addprefix lib/shared/,$(SHARED_CXX_NAMES)) : lib/shared/libstdc++.so.6
+	@echo 'INPUT(libstdc++.so.6)' > $@
+
+lib/shared/nro/libstdc++.so.6 : lib/shared/libstdc++.so.6
+	@mkdir -p lib/shared/nro
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@
+
 lib/libounce_malloc_initd.a : lib debug-switch2-malloc-init $(SOURCES) $(INCLUDES)
 	@$(MAKE) BUILD=debug-switch2-malloc-init SWITCH2=1 MALLOC_INIT=1 OUTPUT=$(CURDIR)/$@ \
 	BUILD_CFLAGS="-DDEBUG=1 -Og" \
@@ -295,7 +462,7 @@ lib/libounce_malloc_initd.a : lib debug-switch2-malloc-init $(SOURCES) $(INCLUDE
 #---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr release debug release-switch2 debug-switch2 release-switch2-malloc debug-switch2-malloc release-switch2-malloc-init debug-switch2-malloc-init lib docs internal_docs
+	@rm -fr release debug release-switch2 debug-switch2 release-switch2-malloc debug-switch2-malloc release-switch2-malloc-init debug-switch2-malloc-init release-switch2-shared lib docs internal_docs
 
 #---------------------------------------------------------------------------------
 else

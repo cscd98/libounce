@@ -30,10 +30,14 @@ prepare() {
     tar -C "$startdir/.." --exclude=./packaging -cf - . | tar -C "$srcdir/libounce" -xf -
 }
 
+# The static library, and then libounce.so with what links a program or a
+# shared library against it.
 build() {
     make -C "$srcdir/libounce/nx" -j"$(nproc)" switch2
+    make -C "$srcdir/libounce/nx" -j"$(nproc)" shared
 }
 
 package() {
     make -C "$srcdir/libounce/nx" install-switch2 DESTDIR="$pkgdir"
+    make -C "$srcdir/libounce/nx" install-shared DESTDIR="$pkgdir"
 }

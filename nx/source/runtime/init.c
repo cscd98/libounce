@@ -191,6 +191,13 @@ void __attribute__((weak)) __libnx_init(void* ctx, Handle main_thread, void* sav
     newlibSetup();
     virtmemSetup();
     __libnx_initheap();
+#ifdef LIBOUNCE_SHARED
+    // libounce.so: the main thread's TLS area for the program and its shared
+    // libraries (switch2/rtld/rtld.c). No code before this may use a
+    // thread-local variable.
+    void _rtldSetupMainTls(void);
+    _rtldSetupMainTls();
+#endif
     __libnx_init_thread();
 
     // Build argc/argv if present
@@ -216,8 +223,14 @@ void __attribute__((weak)) __libnx_init(void* ctx, Handle main_thread, void* sav
     __appInit();
 
     // Call constructors.
+#ifdef LIBOUNCE_SHARED
+    // libounce.so: those of every module, each after the libraries it needs.
+    void _rtldRunConstructors(void);
+    _rtldRunConstructors();
+#else
     void __libc_init_array(void);
     __libc_init_array();
+#endif
 }
 
 #ifdef __SWITCH2__
@@ -230,6 +243,13 @@ void __attribute__((weak)) NX_NORETURN __libnx_exit(int rc)
 {
     // Clean up services.
     __appExit();
+
+#ifdef LIBOUNCE_SHARED
+    // libounce.so: the libraries that the program loaded with dlopen and did
+    // not unload (switch2/rtld/dlfcn.c).
+    void _rtldUnmapLibraries(void);
+    _rtldUnmapLibraries();
+#endif
 
 #ifdef __SWITCH2__
     // A program that replaces __appExit does not close the GPU driver and the

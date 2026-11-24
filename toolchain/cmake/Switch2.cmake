@@ -21,7 +21,13 @@
 # CMAKE_SYSTEM_NAME stays NintendoSwitch, and NINTENDO_SWITCH is set, so
 # projects that test for the Switch build as they do with libnx.
 # NINTENDO_SWITCH2 is also set.
+#
+# With -DOUNCE_SHARED=ON the project is dynamically linked: its programs
+# link libounce.so, and it can build shared libraries (add_library(... SHARED),
+# or BUILD_SHARED_LIBS). Platform/NintendoSwitch.cmake has what changes.
 cmake_minimum_required(VERSION 3.13)
+
+set(OUNCE_SHARED OFF CACHE BOOL "Link programs dynamically, against libounce.so, and allow shared libraries")
 
 if(NOT CMAKE_SYSTEM_NAME)
 	set(CMAKE_SYSTEM_NAME NintendoSwitch)
@@ -35,6 +41,9 @@ list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_LIST_DIR}")
 get_filename_component(OUNCE_DEVKITPRO "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 include("${OUNCE_DEVKITPRO}/cmake/devkitA64.cmake")
 
+# The projects that CMake makes to test the compiler are linked the same way.
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES OUNCE_SHARED)
+
 set(NX_ROOT ${DEVKITPRO}/libounce)
 set(OUNCE_PORTLIBS ${DEVKITPRO}/portlibs/switch2)
 set(DKP_INSTALL_PREFIX_INIT ${OUNCE_PORTLIBS})
@@ -44,6 +53,12 @@ __dkp_platform_prefix(
 	${DEVKITPRO}/portlibs/switch
 	${NX_ROOT}
 )
+
+# aarch64-none-elf-pkg-config gives the shared libraries of the Switch 2
+# portlibs when OUNCE_SHARED is set in its environment.
+if(OUNCE_SHARED)
+	set(ENV{OUNCE_SHARED} 1)
+endif()
 
 find_program(PKG_CONFIG_EXECUTABLE NAMES aarch64-none-elf-pkg-config HINTS "${OUNCE_PORTLIBS}/bin" NO_DEFAULT_PATH)
 if(NOT PKG_CONFIG_EXECUTABLE)

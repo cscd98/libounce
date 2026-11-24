@@ -8,3 +8,4 @@ debug-switch2-malloc
 release-switch2-malloc
 debug-switch2-malloc-init
 release-switch2-malloc-init
+release-switch2-shared
