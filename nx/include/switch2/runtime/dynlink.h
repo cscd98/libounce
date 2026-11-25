@@ -143,7 +143,11 @@ typedef struct DynlinkModule {
     u64 search_mark;                            ///< Private: the last search that reached the module.
 } DynlinkModule;
 
+#ifdef __cplusplus
 static_assert(sizeof(DynlinkModule) <= DYNLINK_MODULE_RECORD_SIZE, "A module's record must fit the space that modules reserve");
+#else
+_Static_assert(sizeof(DynlinkModule) <= DYNLINK_MODULE_RECORD_SIZE, "A module's record must fit the space that modules reserve");
+#endif
 
 /// The modules of one program, in lookup order.
 typedef struct DynlinkProgram {
