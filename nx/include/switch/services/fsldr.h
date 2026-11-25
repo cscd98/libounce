@@ -27,7 +27,11 @@ typedef struct {
 } FsCodeInfo;
 
 #if defined(__SWITCH2__)
+#ifdef __cplusplus
 static_assert(sizeof(FsCodeInfo) == 0x1A4, "Switch 2 code verification data");
+#else
+_Static_assert(sizeof(FsCodeInfo) == 0x1A4, "Switch 2 code verification data");
+#endif
 #endif
 
 /// Initialize fsp-ldr.
