@@ -7,6 +7,12 @@
 # commit and publishes it.
 FROM docker.io/devkitpro/devkita64:20260219 AS build
 
+# devkitPro's newest image has devkitA64 r29 (GCC 15). Programs are built with
+# the toolchain that devkitPro's repository serves now, and their C++ library
+# must be at least as new as the one they were built with: update devkitA64.
+RUN dkp-pacman -Sy --noconfirm devkitA64 && \
+    /opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc --version | head -n 1
+
 ARG VERSION
 # The commit time, so that the package's file times do not depend on the
 # build.
