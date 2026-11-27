@@ -653,6 +653,7 @@ audrvVoiceIsPaused
 audrvVoiceIsPlaying
 audrvVoiceSetBiquadFilter
 audrvVoiceStop
+auduOpenAudioInManager
 auduOpenAudioOutManager
 auduOpenAudioRendererManager
 avmExit
