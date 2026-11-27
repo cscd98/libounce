@@ -3,6 +3,9 @@
 #include "kernel/event.h"
 #include "services/audin.h"
 #include "runtime/hosversion.h"
+#if defined(__SWITCH2__)
+#include "switch2/services/audu.h"
+#endif
 
 #define DEVICE_NAME_LENGTH 0x100
 #define DEFAULT_SAMPLE_RATE 0xBB80
@@ -22,9 +25,20 @@ static Result _audinRegisterBufferEvent(Event *BufferEvent);
 
 NX_GENERATE_SERVICE_GUARD(audin);
 
+#if defined(__SWITCH2__)
+// See switch2/services/audu.c.
+static Result _audinOpenManager(Service* srv_out) {
+    return auduOpenAudioInManager(srv_out);
+}
+#else
+static Result _audinOpenManager(Service* srv_out) {
+    return smGetService(srv_out, "audin:u");
+}
+#endif
+
 Result _audinInitialize(void) {
     Result rc = 0;
-    rc = smGetService(&g_audinSrv, "audin:u");
+    rc = _audinOpenManager(&g_audinSrv);
 
     // Setup the default device
     if (R_SUCCEEDED(rc)) {

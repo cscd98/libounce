@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: ISC
  * Original libounce-nx Switch 2 service wrapper.
  *
- * A game opens aud:u and asks the root for a manager: command 1 for
- * AudioOut, 2 for AudioRenderer. Neither request has arguments, buffers, a
+ * A game opens aud:u and asks the root for a manager: command 0 for
+ * AudioIn, 1 for AudioOut, 2 for AudioRenderer. Neither request has arguments, buffers, a
  * PID or handles. The reply moves the manager session. The service returns
  * the same manager objects it registers as audout:u and audren:u, and
  * accepts libnx's request framing. A manager stays valid after its root
@@ -24,6 +24,10 @@ static Result _auduOpenManager(Service* out, u32 cmd_id) {
     );
     serviceClose(&root);
     return rc;
+}
+
+Result auduOpenAudioInManager(Service* out) {
+    return _auduOpenManager(out, 0);
 }
 
 Result auduOpenAudioOutManager(Service* out) {

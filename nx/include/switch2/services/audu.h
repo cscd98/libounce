@@ -14,6 +14,14 @@
 #include "../../switch/sf/service.h"
 
 /**
+ * @brief Opens the AudioIn manager (IAudioInManager) through the aud:u root (command 0).
+ * @param[out] out The manager session. Close it with serviceClose.
+ * @note A native Switch 2 game is not allowed to open audin:u directly. The manager is the
+ *       same service object as audin:u's, so its commands are those of \ref audinGetServiceSession.
+ */
+Result auduOpenAudioInManager(Service* out);
+
+/**
  * @brief Opens the AudioOut manager (IAudioOutManager) through the aud:u root (command 1).
  * @param[out] out The manager session. Close it with serviceClose.
  * @note A native Switch 2 game is not allowed to open audout:u directly. The manager is the
